@@ -1,0 +1,59 @@
+{
+  "endpoints": {
+    "createPromotion": {
+      "method": "POST",
+      "url": "/api/v1/lucky-draw/promotions",
+      "auth": "owner",
+      "body": {
+        "promotionName": "Songkran 2026",
+        "ticketName": "Grade A",
+        "inventoryId": "INVENTORY_OBJECT_ID_HERE",
+        "redemptionPrice": 15000,
+        "quantityPerRedeem": 1,
+        "storefrontId": "STOREFRONT_OBJECT_ID_HERE"
+      }
+    },
+    "getPromotions": {
+      "method": "GET",
+      "url": "/api/v1/lucky-draw/promotions?isActive=true",
+      "auth": "owner, admin, cashier"
+    },
+    "getPromotion": {
+      "method": "GET",
+      "url": "/api/v1/lucky-draw/promotions/:id",
+      "auth": "owner, admin, cashier"
+    },
+    "updatePromotion": {
+      "method": "PATCH",
+      "url": "/api/v1/lucky-draw/promotions/:id",
+      "auth": "owner",
+      "body": {
+        "redemptionPrice": 12000,
+        "isActive": true
+      }
+    },
+    "deletePromotion": {
+      "method": "DELETE",
+      "url": "/api/v1/lucky-draw/promotions/:id",
+      "auth": "owner"
+    },
+    "processRedemption": {
+      "method": "POST",
+      "url": "/api/v1/lucky-draw/redemptions",
+      "auth": "cashier, admin, owner",
+      "body": {
+        "promotionId": "PROMOTION_OBJECT_ID_HERE",
+        "storefrontId": "STOREFRONT_OBJECT_ID_HERE",
+        "quantity": 1,
+        "ticketCode": "TKT-00123",
+        "customerName": "U Mya",
+        "note": "Winner from Songkran event"
+      }
+    },
+    "getRedemptions": {
+      "method": "GET",
+      "url": "/api/v1/lucky-draw/redemptions?startDate=2026-07-23&endDate=2026-07-23",
+      "auth": "owner, admin, cashier"
+    }
+  }
+}

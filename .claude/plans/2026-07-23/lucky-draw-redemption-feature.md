@@ -1,7 +1,7 @@
 # Lucky Draw Redemption Feature Plan
 
 **Date:** 2026-07-23
-**Status:** Draft
+**Status:** Implemented
 
 ## Context
 
