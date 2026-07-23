@@ -1,0 +1,122 @@
+{
+  "info": {
+    "_postman_id": "a90b6d21-f09c-4933-89b3-1cc67d4bf0cb",
+    "name": "AutoShop POS AI Chat API",
+    "description": "API endpoints for the AutoShop POS sales report AI chat assistant and chat logs history.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "item": [
+    {
+      "name": "Send AI Chat Message",
+      "request": {
+        "auth": {
+          "type": "bearer",
+          "bearer": [
+            {
+              "key": "token",
+              "value": "{{JWT_TOKEN}}",
+              "type": "string"
+            }
+          ]
+        },
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json",
+            "type": "text"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"message\": \"ဒီလအတွက် အရောင်းအစီရင်ခံစာ ဘယ်လိုရှိလဲခင်ဗျာ\",\n  \"storefrontId\": \"\",\n  \"conversationHistory\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"ဟလို\"\n    },\n    {\n      \"role\": \"ai\",\n      \"content\": \"မင်္ဂလာပါခင်ဗျာ။ AutoShop POS AI Sales Report Assistant ဖြစ်ပါတယ်ခင်ဗျာ။ ဘာများ ကူညီပေးရမလဲခင်ဗျာ။\"\n    }\n  ]\n}"
+        },
+        "url": {
+          "raw": "{{BASE_URL}}/api/v1/sale-report/ai-chat",
+          "host": [
+            "{{BASE_URL}}"
+          ],
+          "path": [
+            "api",
+            "v1",
+            "sale-report",
+            "ai-chat"
+          ]
+        },
+        "description": "Sends a message to the AI Sales Assistant along with optional storefront ID and conversation history."
+      },
+      "response": []
+    },
+    {
+      "name": "Get AI Chat History",
+      "request": {
+        "auth": {
+          "type": "bearer",
+          "bearer": [
+            {
+              "key": "token",
+              "value": "{{JWT_TOKEN}}",
+              "type": "string"
+            }
+          ]
+        },
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{BASE_URL}}/api/v1/sale-report/ai-chat/history?limit=50",
+          "host": [
+            "{{BASE_URL}}"
+          ],
+          "path": [
+            "api",
+            "v1",
+            "sale-report",
+            "ai-chat",
+            "history"
+          ],
+          "query": [
+            {
+              "key": "limit",
+              "value": "50",
+              "description": "Optional limit on number of history entries returned"
+            }
+          ]
+        },
+        "description": "Fetches the sorted logs of user's past messages and the AI's responses."
+      },
+      "response": []
+    }
+  ],
+  "event": [
+    {
+      "listen": "prerequest",
+      "script": {
+        "type": "text/javascript",
+        "exec": [
+          ""
+        ]
+      }
+    },
+    {
+      "listen": "test",
+      "script": {
+        "type": "text/javascript",
+        "exec": [
+          ""
+        ]
+      }
+    }
+  ],
+  "variable": [
+    {
+      "key": "BASE_URL",
+      "value": "http://localhost:5000",
+      "type": "string"
+    },
+    {
+      "key": "JWT_TOKEN",
+      "value": "your_jwt_token_here",
+      "type": "string"
+    }
+  ]
+}

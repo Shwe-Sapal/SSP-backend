@@ -1,0 +1,341 @@
+{
+  "info": {
+    "_postman_id": "b18f7734-7a32-472e-835c-cd7e2b10a2ab",
+    "name": "AutoShop POS AI Sales Report Tools",
+    "description": "API endpoints wrapping the sales analytics database tools utilized by the AI Sales Assistant.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "item": [
+    {
+      "name": "1. Get Sales Summary Report",
+      "request": {
+        "auth": {
+          "type": "bearer",
+          "bearer": [
+            {
+              "key": "token",
+              "value": "{{JWT_TOKEN}}",
+              "type": "string"
+            }
+          ]
+        },
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{BASE_URL}}/api/v1/ai-sale-report/summary?storefrontId=&startDate=2026-07-01&endDate=2026-07-22",
+          "host": [
+            "{{BASE_URL}}"
+          ],
+          "path": [
+            "api",
+            "v1",
+            "ai-sale-report",
+            "summary"
+          ],
+          "query": [
+            {
+              "key": "storefrontId",
+              "value": "",
+              "description": "Optional storefront location ID filter"
+            },
+            {
+              "key": "startDate",
+              "value": "2026-07-01",
+              "description": "Optional start date filter (YYYY-MM-DD)"
+            },
+            {
+              "key": "endDate",
+              "value": "2026-07-22",
+              "description": "Optional end date filter (YYYY-MM-DD)"
+            }
+          ]
+        },
+        "description": "Exposes getSaleReport database tool. Gets aggregate sales, orders, discounts, and payments."
+      },
+      "response": []
+    },
+    {
+      "name": "2. Get Payment Methods Breakdown",
+      "request": {
+        "auth": {
+          "type": "bearer",
+          "bearer": [
+            {
+              "key": "token",
+              "value": "{{JWT_TOKEN}}",
+              "type": "string"
+            }
+          ]
+        },
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{BASE_URL}}/api/v1/ai-sale-report/payment-methods?storefrontId=&startDate=2026-07-01&endDate=2026-07-22",
+          "host": [
+            "{{BASE_URL}}"
+          ],
+          "path": [
+            "api",
+            "v1",
+            "ai-sale-report",
+            "payment-methods"
+          ],
+          "query": [
+            {
+              "key": "storefrontId",
+              "value": "",
+              "description": "Optional storefront location ID filter"
+            },
+            {
+              "key": "startDate",
+              "value": "2026-07-01",
+              "description": "Optional start date filter (YYYY-MM-DD)"
+            },
+            {
+              "key": "endDate",
+              "value": "2026-07-22",
+              "description": "Optional end date filter (YYYY-MM-DD)"
+            }
+          ]
+        },
+        "description": "Exposes getPaymentMethodReport tool. Retrieves splits for payment methods (Cash, KBZ Pay, CB Pay, etc.)."
+      },
+      "response": []
+    },
+    {
+      "name": "3. Get Credit Sales Summary",
+      "request": {
+        "auth": {
+          "type": "bearer",
+          "bearer": [
+            {
+              "key": "token",
+              "value": "{{JWT_TOKEN}}",
+              "type": "string"
+            }
+          ]
+        },
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{BASE_URL}}/api/v1/ai-sale-report/credit-sales?storefrontId=&startDate=2026-07-01&endDate=2026-07-22",
+          "host": [
+            "{{BASE_URL}}"
+          ],
+          "path": [
+            "api",
+            "v1",
+            "ai-sale-report",
+            "credit-sales"
+          ],
+          "query": [
+            {
+              "key": "storefrontId",
+              "value": "",
+              "description": "Optional storefront location ID filter"
+            },
+            {
+              "key": "startDate",
+              "value": "2026-07-01",
+              "description": "Optional start date filter (YYYY-MM-DD)"
+            },
+            {
+              "key": "endDate",
+              "value": "2026-07-22",
+              "description": "Optional end date filter (YYYY-MM-DD)"
+            }
+          ]
+        },
+        "description": "Exposes getCreditSaleReport tool. Returns total outstanding debt balances, paid amounts, and credit order metrics."
+      },
+      "response": []
+    },
+    {
+      "name": "4. Get Top Products Report",
+      "request": {
+        "auth": {
+          "type": "bearer",
+          "bearer": [
+            {
+              "key": "token",
+              "value": "{{JWT_TOKEN}}",
+              "type": "string"
+            }
+          ]
+        },
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{BASE_URL}}/api/v1/ai-sale-report/products/top?storefrontId=&startDate=2026-07-01&endDate=2026-07-22",
+          "host": [
+            "{{BASE_URL}}"
+          ],
+          "path": [
+            "api",
+            "v1",
+            "ai-sale-report",
+            "products",
+            "top"
+          ],
+          "query": [
+            {
+              "key": "storefrontId",
+              "value": "",
+              "description": "Optional storefront location ID filter"
+            },
+            {
+              "key": "startDate",
+              "value": "2026-07-01",
+              "description": "Optional start date filter (YYYY-MM-DD)"
+            },
+            {
+              "key": "endDate",
+              "value": "2026-07-22",
+              "description": "Optional end date filter (YYYY-MM-DD)"
+            }
+          ]
+        },
+        "description": "Exposes getProductSalesReport tool. Returns top 5 best selling items by quantity, revenue, and gross profit."
+      },
+      "response": []
+    },
+    {
+      "name": "5. Get Products Purchased by Credit Customer",
+      "request": {
+        "auth": {
+          "type": "bearer",
+          "bearer": [
+            {
+              "key": "token",
+              "value": "{{JWT_TOKEN}}",
+              "type": "string"
+            }
+          ]
+        },
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{BASE_URL}}/api/v1/ai-sale-report/credit-persona-products?creditPersonaId=6a123bc456def7890&storefrontId=&startDate=2026-07-01&endDate=2026-07-22",
+          "host": [
+            "{{BASE_URL}}"
+          ],
+          "path": [
+            "api",
+            "v1",
+            "ai-sale-report",
+            "credit-persona-products"
+          ],
+          "query": [
+            {
+              "key": "creditPersonaId",
+              "value": "6a123bc456def7890",
+              "description": "Required credit customer/persona ID"
+            },
+            {
+              "key": "storefrontId",
+              "value": "",
+              "description": "Optional storefront location ID filter"
+            },
+            {
+              "key": "startDate",
+              "value": "2026-07-01",
+              "description": "Optional start date filter (YYYY-MM-DD)"
+            },
+            {
+              "key": "endDate",
+              "value": "2026-07-22",
+              "description": "Optional end date filter (YYYY-MM-DD)"
+            }
+          ]
+        },
+        "description": "Exposes getCreditPersonaProductReport tool. Returns top 5 products purchased on credit by a specific customer."
+      },
+      "response": []
+    },
+    {
+      "name": "6. Get Credit Sales Analytics by Product",
+      "request": {
+        "auth": {
+          "type": "bearer",
+          "bearer": [
+            {
+              "key": "token",
+              "value": "{{JWT_TOKEN}}",
+              "type": "string"
+            }
+          ]
+        },
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{BASE_URL}}/api/v1/ai-sale-report/products-by-credit-person?storefrontId=&inventoryId=&startDate=2026-07-01&endDate=2026-07-22",
+          "host": [
+            "{{BASE_URL}}"
+          ],
+          "path": [
+            "api",
+            "v1",
+            "ai-sale-report",
+            "products-by-credit-person"
+          ],
+          "query": [
+            {
+              "key": "storefrontId",
+              "value": "",
+              "description": "Optional storefront location ID filter"
+            },
+            {
+              "key": "inventoryId",
+              "value": "",
+              "description": "Optional inventory/product ID filter to track a specific item"
+            },
+            {
+              "key": "startDate",
+              "value": "2026-07-01",
+              "description": "Optional start date filter (YYYY-MM-DD)"
+            },
+            {
+              "key": "endDate",
+              "value": "2026-07-22",
+              "description": "Optional end date filter (YYYY-MM-DD)"
+            }
+          ]
+        },
+        "description": "Exposes getSaleProductsAnalyticsByCreditPerson tool. Ranks products sold on credit along with unique borrower counts."
+      },
+      "response": []
+    }
+  ],
+  "event": [
+    {
+      "listen": "prerequest",
+      "script": {
+        "type": "text/javascript",
+        "exec": [
+          ""
+        ]
+      }
+    },
+    {
+      "listen": "test",
+      "script": {
+        "type": "text/javascript",
+        "exec": [
+          ""
+        ]
+      }
+    }
+  ],
+  "variable": [
+    {
+      "key": "BASE_URL",
+      "value": "http://localhost:5000",
+      "type": "string"
+    },
+    {
+      "key": "JWT_TOKEN",
+      "value": "your_jwt_token_here",
+      "type": "string"
+    }
+  ]
+}

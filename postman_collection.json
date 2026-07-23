@@ -1,0 +1,2114 @@
+{
+  "info": {
+    "name": "Auto Shop POS API",
+    "description": "Complete API collection for Auto Shop POS (Car Showroom / Warehouse / Supplier POS system).\n\n## Authentication\n- Call **POST /api/v1/admin/login** with valid credentials to get a token.\n- Token is automatically saved to the `token` environment variable via the login test script.\n- All protected routes use `Bearer {{token}}` in the Authorization header.\n\n## Permissions\n- `owner` — full access to everything\n- `admin` — most CRUD operations\n- `cashier` — limited to order creation, reading inventory, sales reports\n\n## Environment Variables\n- `baseUrl` — API base URL (default: http://localhost:5000)",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "item": [
+    {
+      "name": "Admin",
+      "description": "Admin account management — signup, login, user CRUD, restore, soft-delete",
+      "item": [
+        {
+          "name": "Signup",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{token}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"owner_user\",\n  \"password\": \"password123\",\n  \"confirmPassword\": \"password123\",\n  \"role\": \"owner\",\n  \"locationId\": \"<location_object_id>\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/admin/signup",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "admin", "signup"]
+            },
+            "description": "Create a new admin account. Requires owner or admin role."
+          },
+          "response": []
+        },
+        {
+          "name": "Login",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"owner_user\",\n  \"password\": \"password123\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/admin/login",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "admin", "login"]
+            },
+            "description": "Login with name and password. Saves JWT token to `token` environment variable."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "if (pm.response.code === 200) {",
+                  "    var jsonData = pm.response.json();",
+                  "    if (jsonData.token) {",
+                  "        pm.environment.set(\"token\", jsonData.token);",
+                  "    }",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ]
+        },
+        {
+          "name": "Get All Accounts",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{token}}" }],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/admin",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "admin"]
+            },
+            "description": "Get all admin accounts. Requires owner or admin role."
+          },
+          "response": []
+        },
+        {
+          "name": "Get Account By ID",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{token}}" }],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/admin/:accountId",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "admin", ":accountId"],
+              "variable": [
+                {
+                  "key": "accountId",
+                  "value": "<account_object_id>",
+                  "description": "Account ID"
+                }
+              ]
+            },
+            "description": "Get a single admin account by ID."
+          },
+          "response": []
+        },
+        {
+          "name": "Update Account",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{token}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"updated_name\",\n  \"role\": \"admin\",\n  \"locationId\": \"<location_object_id>\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/admin/:accountId",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "admin", ":accountId"],
+              "variable": [
+                {
+                  "key": "accountId",
+                  "value": "<account_object_id>",
+                  "description": "Account ID"
+                }
+              ]
+            },
+            "description": "Update account name, role, or locationId. Requires owner role."
+          },
+          "response": []
+        },
+        {
+          "name": "Update Password",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{token}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"newPassword\": \"newpassword456\",\n  \"confirmPassword\": \"newpassword456\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/admin/update-password/:accountId",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "admin", "update-password", ":accountId"],
+              "variable": [
+                {
+                  "key": "accountId",
+                  "value": "<account_object_id>",
+                  "description": "Account ID"
+                }
+              ]
+            },
+            "description": "Update password for an account. Requires owner role."
+          },
+          "response": []
+        },
+        {
+          "name": "Soft Delete",
+          "request": {
+            "method": "PATCH",
+            "header": [{ "key": "Authorization", "value": "Bearer {{token}}" }],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/admin/soft-delete/:accountId",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "admin", "soft-delete", ":accountId"],
+              "variable": [
+                {
+                  "key": "accountId",
+                  "value": "<account_object_id>",
+                  "description": "Account ID"
+                }
+              ]
+            },
+            "description": "Soft delete (deactivate) an account. Requires owner role."
+          },
+          "response": []
+        },
+        {
+          "name": "Restore Account",
+          "request": {
+            "method": "PATCH",
+            "header": [{ "key": "Authorization", "value": "Bearer {{token}}" }],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/admin/restore/:accountId",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "admin", "restore", ":accountId"],
+              "variable": [
+                {
+                  "key": "accountId",
+                  "value": "<account_object_id>",
+                  "description": "Account ID"
+                }
+              ]
+            },
+            "description": "Restore a soft-deleted account. Requires owner role."
+          },
+          "response": []
+        },
+        {
+          "name": "Delete Account (Hard)",
+          "request": {
+            "method": "DELETE",
+            "header": [{ "key": "Authorization", "value": "Bearer {{token}}" }],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/admin/:accountId",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "admin", ":accountId"],
+              "variable": [
+                {
+                  "key": "accountId",
+                  "value": "<account_object_id>",
+                  "description": "Account ID"
+                }
+              ]
+            },
+            "description": "Permanently delete an account. Requires owner role."
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Warehouse Profile",
+      "description": "Warehouse location profiles (stored in LocationProfile with type='warehouse')",
+      "item": [
+        {
+          "name": "Create Warehouse Profile",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{token}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"locationCode\": \"WH-001\",\n  \"locationName\": \"Main Warehouse\",\n  \"locationAddress\": \"123 Warehouse St, Yangon\",\n  \"locationPhone\": \"0912345678\",\n  \"locationEmail\": \"warehouse@example.com\",\n  \"managerName\": \"U Mya\",\n  \"status\": \"active\",\n  \"description\": \"Main warehouse for incoming stock\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/warehouse-profile",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "warehouse-profile"]
+            },
+            "description": "Create a new warehouse profile. Type is auto-set to 'warehouse'."
+          },
+          "response": []
+        },
+        {
+          "name": "Get All Warehouse Profiles",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{token}}" }],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/warehouse-profile",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "warehouse-profile"]
+            },
+            "description": "Get all warehouse profiles."
+          },
+          "response": []
+        },
+        {
+          "name": "Get Warehouse Profile By ID",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{token}}" }],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/warehouse-profile/:id",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "warehouse-profile", ":id"],
+              "variable": [
+                {
+                  "key": "id",
+                  "value": "<warehouse_object_id>",
+                  "description": "Warehouse profile ID"
+                }
+              ]
+            },
+            "description": "Get a single warehouse profile by ID."
+          },
+          "response": []
+        },
+        {
+          "name": "Update Warehouse Profile",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{token}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"locationName\": \"Updated Warehouse Name\",\n  \"managerName\": \"U Ba\",\n  \"status\": \"active\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/warehouse-profile/:id",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "warehouse-profile", ":id"],
+              "variable": [
+                {
+                  "key": "id",
+                  "value": "<warehouse_object_id>",
+                  "description": "Warehouse profile ID"
+                }
+              ]
+            },
+            "description": "Update a warehouse profile. Requires owner role."
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Storefront Profile",
+      "description": "Storefront location profiles (stored in LocationProfile with type='storefront')",
+      "item": [
+        {
+          "name": "Create Storefront Profile",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{token}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"locationCode\": \"SF-001\",\n  \"locationName\": \"Downtown Store\",\n  \"locationAddress\": \"456 Main Rd, Yangon\",\n  \"locationPhone\": \"0998765432\",\n  \"locationEmail\": \"store@example.com\",\n  \"managerName\": \"Daw Aye\",\n  \"status\": \"active\",\n  \"description\": \"Main retail showroom\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/storefront-profile",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "storefront-profile"]
+            },
+            "description": "Create a new storefront profile. Type is auto-set to 'storefront'."
+          },
+          "response": []
+        },
+        {
+          "name": "Get All Storefront Profiles",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{token}}" }],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/storefront-profile",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "storefront-profile"]
+            },
+            "description": "Get all storefront profiles."
+          },
+          "response": []
+        },
+        {
+          "name": "Get Storefront Profile By ID",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{token}}" }],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/storefront-profile/:id",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "storefront-profile", ":id"],
+              "variable": [
+                {
+                  "key": "id",
+                  "value": "<storefront_object_id>",
+                  "description": "Storefront profile ID"
+                }
+              ]
+            },
+            "description": "Get a single storefront profile by ID."
+          },
+          "response": []
+        },
+        {
+          "name": "Update Storefront Profile",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{token}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"locationName\": \"Updated Store Name\",\n  \"managerName\": \"Daw Hla\",\n  \"status\": \"active\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/storefront-profile/:id",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "storefront-profile", ":id"],
+              "variable": [
+                {
+                  "key": "id",
+                  "value": "<storefront_object_id>",
+                  "description": "Storefront profile ID"
+                }
+              ]
+            },
+            "description": "Update a storefront profile. Requires owner role."
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Location Profile",
+      "description": "View all location profiles (warehouses + storefronts combined)",
+      "item": [
+        {
+          "name": "Get All Location Profiles",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{token}}" }],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/location-profile",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "location-profile"]
+            },
+            "description": "Get all location profiles (both warehouse and storefront types)."
+          },
+          "response": []
+        },
+        {
+          "name": "Get Location Profile By ID",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{token}}" }],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/location-profile/:id",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "location-profile", ":id"],
+              "variable": [
+                {
+                  "key": "id",
+                  "value": "<location_object_id>",
+                  "description": "Location profile ID"
+                }
+              ]
+            },
+            "description": "Get a single location profile by ID."
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Inventory",
+      "description": "Product inventory management — CRUD, Excel import, categories",
+      "item": [
+        {
+          "name": "Create Inventory",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{token}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"productName\": \"Car Tire 205/55 R16\",\n  \"productCode\": \"TIRE-205-55-R16\",\n  \"saleCode\": \"SALE-TIRE-001\",\n  \"SKU\": \"SKU-TIRE-001\",\n  \"barcode\": \"8801234567890\",\n  \"category\": \"Tires\",\n  \"subCategory\": \"Passenger\",\n  \"brand\": \"BrandX\",\n  \"description\": \"All-season passenger car tire\",\n  \"buyingPrice\": 80000,\n  \"sellingPrice\": 120000,\n  \"wholesalePrices\": [\n    { \"quantity\": 10, \"price\": 110000 },\n    { \"quantity\": 50, \"price\": 100000 }\n  ],\n  \"unitOfMeasure\": \"piece\",\n  \"reorderPoint\": 10,\n  \"reorderQuantity\": 50,\n  \"taxRate\": 5,\n  \"status\": \"active\",\n  \"tags\": [\"tire\", \"all-season\", \"passenger\"],\n  \"note\": \"Popular model\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/inventory",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "inventory"]
+            },
+            "description": "Create a new inventory product. Requires owner or admin role."
+          },
+          "response": []
+        },
+        {
+          "name": "Get All Inventory",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{token}}" }],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/inventory",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "inventory"]
+            },
+            "description": "Get all inventory products. Supports query parameters for filtering."
+          },
+          "response": []
+        },
+        {
+          "name": "Get Inventory By ID",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{token}}" }],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/inventory/:id",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "inventory", ":id"],
+              "variable": [
+                {
+                  "key": "id",
+                  "value": "<inventory_object_id>",
+                  "description": "Inventory item ID"
+                }
+              ]
+            },
+            "description": "Get a single inventory product by ID."
+          },
+          "response": []
+        },
+        {
+          "name": "Update Inventory",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{token}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"sellingPrice\": 130000,\n  \"status\": \"active\",\n  \"note\": \"Price updated\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/inventory/:id",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "inventory", ":id"],
+              "variable": [
+                {
+                  "key": "id",
+                  "value": "<inventory_object_id>",
+                  "description": "Inventory item ID"
+                }
+              ]
+            },
+            "description": "Update inventory product metadata. Requires owner role."
+          },
+          "response": []
+        },
+        {
+          "name": "Import Inventory from Excel",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Authorization", "value": "Bearer {{token}}" }],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "file",
+                  "type": "file",
+                  "src": "",
+                  "description": "Excel file (.xlsx, .xls, .csv) — max 5MB"
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/inventory/import-excel",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "inventory", "import-excel"]
+            },
+            "description": "Bulk import inventory from an Excel/CSV file. Requires owner or admin role."
+          },
+          "response": []
+        },
+        {
+          "name": "Get All Categories",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{token}}" }],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/inventory/categories",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "inventory", "categories"]
+            },
+            "description": "Get all unique product categories."
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Supplier Profile",
+      "description": "Supplier management — CRUD, soft-delete, restore, hard-delete",
+      "item": [
+        {
+          "name": "Create Supplier",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{token}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"supplierName\": \"ABC Auto Parts\",\n  \"contactNumber\": \"0912345678\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/supplier-profile",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "supplier-profile"]
+            },
+            "description": "Create a new supplier profile. Requires owner or admin role."
+          },
+          "response": []
+        },
+        {
+          "name": "Get All Suppliers",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{token}}" }],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/supplier-profile",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "supplier-profile"]
+            },
+            "description": "Get all supplier profiles."
+          },
+          "response": []
+        },
+        {
+          "name": "Get Supplier By ID",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{token}}" }],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/supplier-profile/:id",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "supplier-profile", ":id"],
+              "variable": [
+                {
+                  "key": "id",
+                  "value": "<supplier_object_id>",
+                  "description": "Supplier profile ID"
+                }
+              ]
+            },
+            "description": "Get a single supplier profile by ID."
+          },
+          "response": []
+        },
+        {
+          "name": "Update Supplier",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{token}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"supplierName\": \"ABC Auto Parts Updated\",\n  \"contactNumber\": \"0998765432\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/supplier-profile/:id",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "supplier-profile", ":id"],
+              "variable": [
+                {
+                  "key": "id",
+                  "value": "<supplier_object_id>",
+                  "description": "Supplier profile ID"
+                }
+              ]
+            },
+            "description": "Update a supplier profile. Requires owner role."
+          },
+          "response": []
+        },
+        {
+          "name": "Soft Delete Supplier",
+          "request": {
+            "method": "PATCH",
+            "header": [{ "key": "Authorization", "value": "Bearer {{token}}" }],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/supplier-profile/:id/soft-delete",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "supplier-profile", ":id", "soft-delete"],
+              "variable": [
+                {
+                  "key": "id",
+                  "value": "<supplier_object_id>",
+                  "description": "Supplier profile ID"
+                }
+              ]
+            },
+            "description": "Soft delete a supplier profile. Requires owner role."
+          },
+          "response": []
+        },
+        {
+          "name": "Restore Supplier",
+          "request": {
+            "method": "PATCH",
+            "header": [{ "key": "Authorization", "value": "Bearer {{token}}" }],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/supplier-profile/:id/restore",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "supplier-profile", ":id", "restore"],
+              "variable": [
+                {
+                  "key": "id",
+                  "value": "<supplier_object_id>",
+                  "description": "Supplier profile ID"
+                }
+              ]
+            },
+            "description": "Restore a soft-deleted supplier. Requires owner role."
+          },
+          "response": []
+        },
+        {
+          "name": "Delete Supplier (Hard)",
+          "request": {
+            "method": "DELETE",
+            "header": [{ "key": "Authorization", "value": "Bearer {{token}}" }],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/supplier-profile/:id",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "supplier-profile", ":id"],
+              "variable": [
+                {
+                  "key": "id",
+                  "value": "<supplier_object_id>",
+                  "description": "Supplier profile ID"
+                }
+              ]
+            },
+            "description": "Permanently delete a supplier profile. Requires owner role."
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Purchasing",
+      "description": "Purchase Orders (PO) management — CRUD, status updates, soft-delete/restore",
+      "item": [
+        {
+          "name": "Create Purchase Order",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{token}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"supplierId\": \"<supplier_object_id>\",\n  \"products\": [\n    {\n      \"inventoryId\": \"<inventory_object_id>\",\n      \"productName\": \"Car Tire 205/55 R16\",\n      \"buyingPrice\": 80000,\n      \"purchaseQuantity\": 50,\n      \"productCode\": \"TIRE-205-55-R16\"\n    }\n  ],\n  \"status\": \"pending\",\n  \"note\": \"Monthly stock replenishment\",\n  \"totalAmount\": 4000000,\n  \"purchasedBy\": \"<admin_object_id>\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/purchase",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "purchase"]
+            },
+            "description": "Create a new purchase order. PO number is auto-generated."
+          },
+          "response": []
+        },
+        {
+          "name": "Get All Purchase Orders",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{token}}" }],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/purchase",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "purchase"]
+            },
+            "description": "Get all purchase orders."
+          },
+          "response": []
+        },
+        {
+          "name": "Get Purchase Order By ID",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{token}}" }],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/purchase/:id",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "purchase", ":id"],
+              "variable": [
+                {
+                  "key": "id",
+                  "value": "<purchase_object_id>",
+                  "description": "Purchase Order ID"
+                }
+              ]
+            },
+            "description": "Get a single purchase order by ID."
+          },
+          "response": []
+        },
+        {
+          "name": "Update Purchase Status",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{token}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"status\": \"confirmed\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/purchase/:id/status",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "purchase", ":id", "status"],
+              "variable": [
+                {
+                  "key": "id",
+                  "value": "<purchase_object_id>",
+                  "description": "Purchase Order ID"
+                }
+              ]
+            },
+            "description": "Update purchase order status. Valid values: pending, confirmed, arrived, cancelled, completed."
+          },
+          "response": []
+        },
+        {
+          "name": "Soft Delete Purchase",
+          "request": {
+            "method": "PATCH",
+            "header": [{ "key": "Authorization", "value": "Bearer {{token}}" }],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/purchase/:id/soft-delete",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "purchase", ":id", "soft-delete"],
+              "variable": [
+                {
+                  "key": "id",
+                  "value": "<purchase_object_id>",
+                  "description": "Purchase Order ID"
+                }
+              ]
+            },
+            "description": "Soft delete a purchase order. Requires owner role."
+          },
+          "response": []
+        },
+        {
+          "name": "Restore Purchase",
+          "request": {
+            "method": "PATCH",
+            "header": [{ "key": "Authorization", "value": "Bearer {{token}}" }],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/purchase/:id/restore",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "purchase", ":id", "restore"],
+              "variable": [
+                {
+                  "key": "id",
+                  "value": "<purchase_object_id>",
+                  "description": "Purchase Order ID"
+                }
+              ]
+            },
+            "description": "Restore a soft-deleted purchase order. Requires owner role."
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "GRN",
+      "description": "Goods Received Note — manage incoming stock receipts linked to purchase orders",
+      "item": [
+        {
+          "name": "Create GRN",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{token}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"purchasingId\": \"<purchase_object_id>\",\n  \"grnDate\": \"2026-07-14T00:00:00.000Z\",\n  \"status\": \"pending\",\n  \"lineItems\": [\n    {\n      \"inventoryId\": \"<inventory_object_id>\",\n      \"receivedQuantity\": 50,\n      \"goodQuantity\": 48,\n      \"badQuantity\": 2,\n      \"transferredQuantity\": 0,\n      \"unitPrice\": 80000,\n      \"totalPrice\": 3840000,\n      \"notes\": \"2 units damaged during shipping\"\n    }\n  ],\n  \"notes\": \"GRN for monthly replenishment\",\n  \"totalAmount\": 3840000\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/grn",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "grn"]
+            },
+            "description": "Create a new Goods Received Note. GRN number is auto-generated."
+          },
+          "response": []
+        },
+        {
+          "name": "Get All GRNs",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{token}}" }],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/grn",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "grn"]
+            },
+            "description": "Get all Goods Received Notes."
+          },
+          "response": []
+        },
+        {
+          "name": "Get GRN By ID",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{token}}" }],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/grn/:id",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "grn", ":id"],
+              "variable": [
+                {
+                  "key": "id",
+                  "value": "<grn_object_id>",
+                  "description": "GRN ID"
+                }
+              ]
+            },
+            "description": "Get a single GRN by ID."
+          },
+          "response": []
+        },
+        {
+          "name": "Update GRN Status",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{token}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"status\": \"verified\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/grn/:id/status",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "grn", ":id", "status"],
+              "variable": [
+                {
+                  "key": "id",
+                  "value": "<grn_object_id>",
+                  "description": "GRN ID"
+                }
+              ]
+            },
+            "description": "Update GRN status. Valid values: pending, partial, verified, rejected."
+          },
+          "response": []
+        },
+        {
+          "name": "Update GRN Line Items",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{token}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"lineItems\": [\n    {\n      \"inventoryId\": \"<inventory_object_id>\",\n      \"receivedQuantity\": 50,\n      \"goodQuantity\": 49,\n      \"badQuantity\": 1,\n      \"transferredQuantity\": 0,\n      \"unitPrice\": 80000,\n      \"totalPrice\": 3920000\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/grn/:id/line-items",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "grn", ":id", "line-items"],
+              "variable": [
+                {
+                  "key": "id",
+                  "value": "<grn_object_id>",
+                  "description": "GRN ID"
+                }
+              ]
+            },
+            "description": "Update line items in a GRN."
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Warehouse Stock",
+      "description": "Warehouse stock levels — track inventory quantities by warehouse",
+      "item": [
+        {
+          "name": "Create Warehouse Stock",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{token}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"inventoryId\": \"<inventory_object_id>\",\n  \"warehouseId\": \"<warehouse_object_id>\",\n  \"quantity\": 100\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/warehouse",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "warehouse"]
+            },
+            "description": "Create a new warehouse stock record. Requires owner or admin role."
+          },
+          "response": []
+        },
+        {
+          "name": "Get All Warehouse Stock",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{token}}" }],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/warehouse",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "warehouse"]
+            },
+            "description": "Get all warehouse stock records."
+          },
+          "response": []
+        },
+        {
+          "name": "Get Warehouse Stock By ID",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{token}}" }],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/warehouse/:id",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "warehouse", ":id"],
+              "variable": [
+                {
+                  "key": "id",
+                  "value": "<warehouse_stock_object_id>",
+                  "description": "Warehouse stock record ID"
+                }
+              ]
+            },
+            "description": "Get a single warehouse stock record by ID."
+          },
+          "response": []
+        },
+        {
+          "name": "Update Warehouse Stock Quantity",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{token}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"quantity\": 150\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/warehouse/:id/quantity",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "warehouse", ":id", "quantity"],
+              "variable": [
+                {
+                  "key": "id",
+                  "value": "<warehouse_stock_object_id>",
+                  "description": "Warehouse stock record ID"
+                }
+              ]
+            },
+            "description": "Update warehouse stock quantity. Requires owner role."
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Storefront Inventory",
+      "description": "Storefront stock levels — track inventory quantities by storefront",
+      "item": [
+        {
+          "name": "Create Storefront Inventory",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{token}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"storefrontId\": \"<storefront_object_id>\",\n  \"inventoryId\": \"<inventory_object_id>\",\n  \"quantity\": 20\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/storefront-inventory",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "storefront-inventory"]
+            },
+            "description": "Create a new storefront inventory record. Requires owner or admin role."
+          },
+          "response": []
+        },
+        {
+          "name": "Get All Storefront Inventory",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{token}}" }],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/storefront-inventory",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "storefront-inventory"]
+            },
+            "description": "Get all storefront inventory records (with filtering, pagination, sorting)."
+          },
+          "response": []
+        },
+        {
+          "name": "Get Storefront Inventory By ID",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{token}}" }],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/storefront-inventory/:id",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "storefront-inventory", ":id"],
+              "variable": [
+                {
+                  "key": "id",
+                  "value": "<storefront_inv_object_id>",
+                  "description": "Storefront inventory record ID"
+                }
+              ]
+            },
+            "description": "Get a single storefront inventory record by ID."
+          },
+          "response": []
+        },
+        {
+          "name": "Update Storefront Inventory Quantity",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{token}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"quantity\": 30\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/storefront-inventory/:id/quantity",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "storefront-inventory", ":id", "quantity"],
+              "variable": [
+                {
+                  "key": "id",
+                  "value": "<storefront_inv_object_id>",
+                  "description": "Storefront inventory record ID"
+                }
+              ]
+            },
+            "description": "Update storefront inventory quantity. Requires owner role."
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Transfer",
+      "description": "Stock transfers between GRN→Warehouse or Warehouse→Storefront",
+      "item": [
+        {
+          "name": "Create Transfer",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{token}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"sourceType\": \"GRN\",\n  \"sourceId\": \"<grn_object_id>\",\n  \"destinationWarehouseId\": \"<warehouse_object_id>\",\n  \"lineItems\": [\n    {\n      \"inventoryId\": \"<inventory_object_id>\",\n      \"quantity\": 50\n    }\n  ],\n  \"transferDate\": \"2026-07-14T00:00:00.000Z\",\n  \"notes\": \"Transfer from GRN to warehouse\",\n  \"transferredBy\": \"<admin_object_id>\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/transfer",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "transfer"]
+            },
+            "description": "Create a new stock transfer. Transfer number is auto-generated."
+          },
+          "response": []
+        },
+        {
+          "name": "Get All Transfers",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{token}}" }],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/transfer",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "transfer"]
+            },
+            "description": "Get all stock transfers."
+          },
+          "response": []
+        },
+        {
+          "name": "Get Transfer By ID",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{token}}" }],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/transfer/:id",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "transfer", ":id"],
+              "variable": [
+                {
+                  "key": "id",
+                  "value": "<transfer_object_id>",
+                  "description": "Transfer ID"
+                }
+              ]
+            },
+            "description": "Get a single transfer by ID."
+          },
+          "response": []
+        },
+        {
+          "name": "Update Transfer Status",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{token}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"status\": \"completed\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/transfer/:id",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "transfer", ":id"],
+              "variable": [
+                {
+                  "key": "id",
+                  "value": "<transfer_object_id>",
+                  "description": "Transfer ID"
+                }
+              ]
+            },
+            "description": "Update transfer status. Valid values: pending, in-transit, completed, cancelled."
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Order",
+      "description": "Sales orders — create, manage items, payments, credit assignment",
+      "item": [
+        {
+          "name": "Create Order",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{token}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"storefrontId\": \"<storefront_object_id>\",\n  \"ordersProducts\": [\n    {\n      \"inventoryId\": \"<inventory_object_id>\",\n      \"quantity\": 2,\n      \"unitPrice\": 120000,\n      \"buyingPrice\": 80000\n    }\n  ],\n  \"subTotal\": 240000,\n  \"tax\": 12000,\n  \"discount\": 0,\n  \"finalAmount\": 252000,\n  \"paidAmount\": 252000,\n  \"orderStatus\": \"completed\",\n  \"soldBy\": \"<admin_object_id>\",\n  \"paymentType\": \"paid\",\n  \"paymentMethod\": \"cash\",\n  \"note\": \"Walk-in customer\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/order",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "order"]
+            },
+            "description": "Create a new sales order. Order number is auto-generated."
+          },
+          "response": []
+        },
+        {
+          "name": "Get All Orders",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{token}}" }],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/order",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "order"]
+            },
+            "description": "Get all orders."
+          },
+          "response": []
+        },
+        {
+          "name": "Get Order By ID",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{token}}" }],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/order/:orderId",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "order", ":orderId"],
+              "variable": [
+                {
+                  "key": "orderId",
+                  "value": "<order_object_id>",
+                  "description": "Order ID"
+                }
+              ]
+            },
+            "description": "Get a single order by ID."
+          },
+          "response": []
+        },
+        {
+          "name": "Get Orders By Storefront",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{token}}" }],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/order/storefront/:storefrontId",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "order", "storefront", ":storefrontId"],
+              "variable": [
+                {
+                  "key": "storefrontId",
+                  "value": "<storefront_object_id>",
+                  "description": "Storefront profile ID"
+                }
+              ]
+            },
+            "description": "Get all orders for a specific storefront."
+          },
+          "response": []
+        },
+        {
+          "name": "Update Order Credit Person",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{token}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"creditPersonId\": \"<credit_persona_object_id>\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/order/:orderId/credit-person",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "order", ":orderId", "credit-person"],
+              "variable": [
+                {
+                  "key": "orderId",
+                  "value": "<order_object_id>",
+                  "description": "Order ID"
+                }
+              ]
+            },
+            "description": "Assign or update a credit person on an order."
+          },
+          "response": []
+        },
+        {
+          "name": "Update Order Paid Amount",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{token}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"paidAmount\": 100000\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/order/:orderId/paid-amount",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "order", ":orderId", "paid-amount"],
+              "variable": [
+                {
+                  "key": "orderId",
+                  "value": "<order_object_id>",
+                  "description": "Order ID"
+                }
+              ]
+            },
+            "description": "Update the paid amount on an order. Requires owner role."
+          },
+          "response": []
+        },
+        {
+          "name": "Add Order Items",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{token}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"items\": [\n    {\n      \"inventoryId\": \"<inventory_object_id>\",\n      \"quantity\": 1,\n      \"unitPrice\": 120000,\n      \"buyingPrice\": 80000\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/order/:orderId/items/add",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "order", ":orderId", "items", "add"],
+              "variable": [
+                {
+                  "key": "orderId",
+                  "value": "<order_object_id>",
+                  "description": "Order ID"
+                }
+              ]
+            },
+            "description": "Add items to an existing order. Requires owner role."
+          },
+          "response": []
+        },
+        {
+          "name": "Remove Order Items",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{token}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"inventoryIds\": [\"<inventory_object_id>\"]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/order/:orderId/items/remove",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "order", ":orderId", "items", "remove"],
+              "variable": [
+                {
+                  "key": "orderId",
+                  "value": "<order_object_id>",
+                  "description": "Order ID"
+                }
+              ]
+            },
+            "description": "Remove items from an existing order. Requires owner role."
+          },
+          "response": []
+        },
+        {
+          "name": "Delete Order (Hard)",
+          "request": {
+            "method": "DELETE",
+            "header": [{ "key": "Authorization", "value": "Bearer {{token}}" }],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/order/:orderId",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "order", ":orderId"],
+              "variable": [
+                {
+                  "key": "orderId",
+                  "value": "<order_object_id>",
+                  "description": "Order ID"
+                }
+              ]
+            },
+            "description": "Permanently delete an order."
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Credit Persona",
+      "description": "Credit customer management — create, read, update credit persons",
+      "item": [
+        {
+          "name": "Create Credit Person",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{token}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"U Kyaw Kyaw\",\n  \"phone\": \"0912345678\",\n  \"address\": \"123 Main St, Yangon\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/credit-persona",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "credit-persona"]
+            },
+            "description": "Create a new credit person (customer who can buy on credit)."
+          },
+          "response": []
+        },
+        {
+          "name": "Get All Credit Persons",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{token}}" }],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/credit-persona",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "credit-persona"]
+            },
+            "description": "Get all credit persons."
+          },
+          "response": []
+        },
+        {
+          "name": "Get Credit Person By ID",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{token}}" }],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/credit-persona/:id",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "credit-persona", ":id"],
+              "variable": [
+                {
+                  "key": "id",
+                  "value": "<credit_persona_object_id>",
+                  "description": "Credit Person ID"
+                }
+              ]
+            },
+            "description": "Get a single credit person by ID."
+          },
+          "response": []
+        },
+        {
+          "name": "Update Credit Person",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{token}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"U Kyaw Kyaw Updated\",\n  \"phone\": \"0998765432\",\n  \"address\": \"456 New St, Yangon\",\n  \"blacklist\": false\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/credit-persona/:id",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "credit-persona", ":id"],
+              "variable": [
+                {
+                  "key": "id",
+                  "value": "<credit_persona_object_id>",
+                  "description": "Credit Person ID"
+                }
+              ]
+            },
+            "description": "Update a credit person. Requires owner role."
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Credit Record",
+      "description": "Credit payment records — track payments made against credit orders",
+      "item": [
+        {
+          "name": "Create Credit Payment",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{token}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"orderId\": \"<order_object_id>\",\n  \"creditPersonId\": \"<credit_persona_object_id>\",\n  \"paidAmount\": 50000,\n  \"paymentDate\": \"2026-07-14T00:00:00.000Z\",\n  \"paymentMethod\": \"cash\",\n  \"notes\": \"Partial payment\",\n  \"addedBy\": \"<admin_object_id>\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/credit-record",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "credit-record"]
+            },
+            "description": "Create a credit payment record for an order."
+          },
+          "response": []
+        },
+        {
+          "name": "Get All Credit Records",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{token}}" }],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/credit-record",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "credit-record"]
+            },
+            "description": "Get all credit records (with optional filtering)."
+          },
+          "response": []
+        },
+        {
+          "name": "Get Credit Record By ID",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{token}}" }],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/credit-record/:id",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "credit-record", ":id"],
+              "variable": [
+                {
+                  "key": "id",
+                  "value": "<credit_record_object_id>",
+                  "description": "Credit Record ID"
+                }
+              ]
+            },
+            "description": "Get a single credit record by ID."
+          },
+          "response": []
+        },
+        {
+          "name": "Get Credit Records By Order",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{token}}" }],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/order/:orderId/credit-records",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "order", ":orderId", "credit-records"],
+              "variable": [
+                {
+                  "key": "orderId",
+                  "value": "<order_object_id>",
+                  "description": "Order ID"
+                }
+              ]
+            },
+            "description": "Get all credit records for a specific order."
+          },
+          "response": []
+        },
+        {
+          "name": "Get Credit Records By Credit Person",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{token}}" }],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/credit-persona/:creditPersonId/credit-records",
+              "host": ["{{baseUrl}}"],
+              "path": [
+                "api",
+                "v1",
+                "credit-persona",
+                ":creditPersonId",
+                "credit-records"
+              ],
+              "variable": [
+                {
+                  "key": "creditPersonId",
+                  "value": "<credit_persona_object_id>",
+                  "description": "Credit Person ID"
+                }
+              ]
+            },
+            "description": "Get all credit records for a specific credit person."
+          },
+          "response": []
+        },
+        {
+          "name": "Delete Credit Record (Hard)",
+          "request": {
+            "method": "DELETE",
+            "header": [{ "key": "Authorization", "value": "Bearer {{token}}" }],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/credit-record/:id",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "credit-record", ":id"],
+              "variable": [
+                {
+                  "key": "id",
+                  "value": "<credit_record_object_id>",
+                  "description": "Credit Record ID"
+                }
+              ]
+            },
+            "description": "Permanently delete a credit record. Requires owner role."
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Expense",
+      "description": "Expense tracking — CRUD, soft-delete, restore, hard-delete",
+      "item": [
+        {
+          "name": "Create Expense",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{token}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"category\": \"Utilities\",\n  \"amount\": 150000,\n  \"date\": \"2026-07-14T00:00:00.000Z\",\n  \"notes\": \"Monthly electricity bill\",\n  \"locationId\": \"<location_object_id>\",\n  \"adminId\": \"<admin_object_id>\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/expense",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "expense"]
+            },
+            "description": "Create a new expense record."
+          },
+          "response": []
+        },
+        {
+          "name": "Get All Expenses",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{token}}" }],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/expense",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "expense"]
+            },
+            "description": "Get all expense records."
+          },
+          "response": []
+        },
+        {
+          "name": "Get Expense By ID",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{token}}" }],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/expense/:id",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "expense", ":id"],
+              "variable": [
+                {
+                  "key": "id",
+                  "value": "<expense_object_id>",
+                  "description": "Expense ID"
+                }
+              ]
+            },
+            "description": "Get a single expense record by ID."
+          },
+          "response": []
+        },
+        {
+          "name": "Update Expense",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{token}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"category\": \"Utilities\",\n  \"amount\": 160000,\n  \"notes\": \"Updated electricity bill\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/expense/:id",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "expense", ":id"],
+              "variable": [
+                {
+                  "key": "id",
+                  "value": "<expense_object_id>",
+                  "description": "Expense ID"
+                }
+              ]
+            },
+            "description": "Update an expense record. Requires owner role."
+          },
+          "response": []
+        },
+        {
+          "name": "Soft Delete Expense",
+          "request": {
+            "method": "PATCH",
+            "header": [{ "key": "Authorization", "value": "Bearer {{token}}" }],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/expense/:id/soft-delete",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "expense", ":id", "soft-delete"],
+              "variable": [
+                {
+                  "key": "id",
+                  "value": "<expense_object_id>",
+                  "description": "Expense ID"
+                }
+              ]
+            },
+            "description": "Soft delete an expense record. Requires owner role."
+          },
+          "response": []
+        },
+        {
+          "name": "Restore Expense",
+          "request": {
+            "method": "PATCH",
+            "header": [{ "key": "Authorization", "value": "Bearer {{token}}" }],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/expense/:id/restore",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "expense", ":id", "restore"],
+              "variable": [
+                {
+                  "key": "id",
+                  "value": "<expense_object_id>",
+                  "description": "Expense ID"
+                }
+              ]
+            },
+            "description": "Restore a soft-deleted expense. Requires owner role."
+          },
+          "response": []
+        },
+        {
+          "name": "Delete Expense (Hard)",
+          "request": {
+            "method": "DELETE",
+            "header": [{ "key": "Authorization", "value": "Bearer {{token}}" }],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/expense/:id",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "expense", ":id"],
+              "variable": [
+                {
+                  "key": "id",
+                  "value": "<expense_object_id>",
+                  "description": "Expense ID"
+                }
+              ]
+            },
+            "description": "Permanently delete an expense record. Requires owner role."
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Sale Report",
+      "description": "Sales analytics and reporting endpoints",
+      "item": [
+        {
+          "name": "Get Sale Report",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{token}}" }],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/sale-report?storefrontId=<storefront_object_id>",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "sale-report"],
+              "query": [
+                {
+                  "key": "storefrontId",
+                  "value": "<storefront_object_id>",
+                  "description": "Filter by storefront (omit for all)"
+                }
+              ]
+            },
+            "description": "Get sale report for a specific storefront or all storefronts."
+          },
+          "response": []
+        },
+        {
+          "name": "Get Paid Orders Report",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{token}}" }],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/sale-report/paid-orders?storefrontId=<storefront_object_id>",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "sale-report", "paid-orders"],
+              "query": [
+                {
+                  "key": "storefrontId",
+                  "value": "<storefront_object_id>",
+                  "description": "Filter by storefront (omit for all)"
+                }
+              ]
+            },
+            "description": "Get payment method breakdown report for paid orders."
+          },
+          "response": []
+        },
+        {
+          "name": "Get Credit Orders Report",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{token}}" }],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/sale-report/credit-orders?storefrontId=<storefront_object_id>",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "sale-report", "credit-orders"],
+              "query": [
+                {
+                  "key": "storefrontId",
+                  "value": "<storefront_object_id>",
+                  "description": "Filter by storefront (omit for all)"
+                }
+              ]
+            },
+            "description": "Get credit sale report with credit records breakdown."
+          },
+          "response": []
+        },
+        {
+          "name": "Get Product Sales Report",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{token}}" }],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/sale-report/products?storefrontId=<storefront_object_id>",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "sale-report", "products"],
+              "query": [
+                {
+                  "key": "storefrontId",
+                  "value": "<storefront_object_id>",
+                  "description": "Filter by storefront (omit for all)"
+                }
+              ]
+            },
+            "description": "Get product/stock sales statistics report."
+          },
+          "response": []
+        },
+        {
+          "name": "Get Credit Persona Product Report",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{token}}" }],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/sale-report/credit-persona-products",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "sale-report", "credit-persona-products"]
+            },
+            "description": "Get credit persona product report."
+          },
+          "response": []
+        },
+        {
+          "name": "Get Products By Credit Person",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{token}}" }],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/sale-report/products-by-credit-person?storefrontId=<storefront_object_id>&inventoryId=<inventory_object_id>",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "sale-report", "products-by-credit-person"],
+              "query": [
+                {
+                  "key": "storefrontId",
+                  "value": "<storefront_object_id>",
+                  "description": "Filter by storefront (omit for all)"
+                },
+                {
+                  "key": "inventoryId",
+                  "value": "<inventory_object_id>",
+                  "description": "Filter by product (omit for all)"
+                }
+              ]
+            },
+            "description": "Get sale products analytics grouped by credit person."
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Shop Settings",
+      "description": "Shop/business configuration — settings, logo upload, audit trail",
+      "item": [
+        {
+          "name": "Create or Update Shop Settings",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{token}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"shopName\": \"AutoMart Car Showroom\",\n  \"address\": \"123 Main Road, Yangon\",\n  \"phoneNumber\": \"0912345678\",\n  \"email\": \"info@automart.com\",\n  \"taxId\": \"TAX-001\",\n  \"currency\": \"MMK\",\n  \"taxRate\": 5,\n  \"businessHours\": {\n    \"monday\": { \"open\": \"09:00\", \"close\": \"18:00\", \"closed\": false },\n    \"tuesday\": { \"open\": \"09:00\", \"close\": \"18:00\", \"closed\": false },\n    \"wednesday\": { \"open\": \"09:00\", \"close\": \"18:00\", \"closed\": false },\n    \"thursday\": { \"open\": \"09:00\", \"close\": \"18:00\", \"closed\": false },\n    \"friday\": { \"open\": \"09:00\", \"close\": \"18:00\", \"closed\": false },\n    \"saturday\": { \"open\": \"09:00\", \"close\": \"16:00\", \"closed\": false },\n    \"sunday\": { \"open\": \"\", \"close\": \"\", \"closed\": true }\n  },\n  \"socialMedia\": {\n    \"facebook\": \"https://facebook.com/automart\",\n    \"instagram\": \"https://instagram.com/automart\",\n    \"website\": \"https://automart.com\"\n  },\n  \"updatedBy\": \"<admin_object_id>\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/shop-settings",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "shop-settings"]
+            },
+            "description": "Create or update shop settings."
+          },
+          "response": []
+        },
+        {
+          "name": "Upload Shop Logo",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Authorization", "value": "Bearer {{token}}" }],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "logo",
+                  "type": "file",
+                  "src": "",
+                  "description": "Shop logo image file"
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/shop-settings/logo",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "shop-settings", "logo"]
+            },
+            "description": "Upload shop logo image."
+          },
+          "response": []
+        },
+        {
+          "name": "Get Current Shop Settings",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/shop-settings",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "shop-settings"]
+            },
+            "description": "Get current active shop settings (publicly accessible, no auth required)."
+          },
+          "response": []
+        },
+        {
+          "name": "Delete Shop Logo",
+          "request": {
+            "method": "DELETE",
+            "header": [{ "key": "Authorization", "value": "Bearer {{token}}" }],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/shop-settings/logo",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "shop-settings", "logo"]
+            },
+            "description": "Delete shop logo."
+          },
+          "response": []
+        },
+        {
+          "name": "Get Shop Settings History",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{token}}" }],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/shop-settings/history",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "shop-settings", "history"]
+            },
+            "description": "Get all shop settings records for audit trail."
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Stock Audit Log",
+      "description": "Stock change audit trail — view inventory quantity change logs",
+      "item": [
+        {
+          "name": "Get All Stock Audit Logs",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{token}}" }],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/stock-audit-logs",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "stock-audit-logs"]
+            },
+            "description": "Get all stock audit log entries."
+          },
+          "response": []
+        },
+        {
+          "name": "Get Stock Audit Log By ID",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{token}}" }],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/stock-audit-logs/:id",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "stock-audit-logs", ":id"],
+              "variable": [
+                {
+                  "key": "id",
+                  "value": "<audit_log_object_id>",
+                  "description": "Audit log ID"
+                }
+              ]
+            },
+            "description": "Get a single stock audit log entry by ID."
+          },
+          "response": []
+        }
+      ]
+    }
+  ],
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "http://localhost:5000",
+      "type": "string"
+    },
+    {
+      "key": "token",
+      "value": "",
+      "type": "string"
+    }
+  ]
+}
