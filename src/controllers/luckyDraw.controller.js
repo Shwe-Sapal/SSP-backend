@@ -162,6 +162,11 @@ export const processRedemption = asyncErrorHandler(async (req, res, next) => {
     return next(new CustomError(400, "Invalid storefront ID format"));
   }
 
+  // Validate quantity is a positive integer (prevents stock manipulation via negative/decimal values)
+  if (quantity !== undefined && (!Number.isInteger(quantity) || quantity <= 0)) {
+    return next(new CustomError(400, "Quantity must be a positive integer"));
+  }
+
   const redeemQuantity = quantity || 1;
 
   // Use ACID transaction for atomic stock deduction + record creation
@@ -177,6 +182,19 @@ export const processRedemption = asyncErrorHandler(async (req, res, next) => {
 
       if (!promotion) {
         throw new CustomError(400, "Promotion is not active or not found");
+      }
+
+      // Validate storefront matches the promotion's target storefront
+      if (promotion.storefrontId && promotion.storefrontId.toString() !== storefrontId.toString()) {
+        throw new CustomError(400, "This promotion is not valid for this storefront branch");
+      }
+
+      // Prevent reuse of already-redeemed ticket codes
+      if (ticketCode) {
+        const existingTicket = await LuckyDrawRedemption.findOne({ ticketCode, isDeleted: false }).session(session);
+        if (existingTicket) {
+          throw new CustomError(400, "This ticket code has already been redeemed");
+        }
       }
 
       const productQuantity = promotion.quantityPerRedeem * redeemQuantity;

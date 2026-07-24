@@ -83,6 +83,7 @@ luckyDrawRedemptionSchema.index({ storefrontId: 1 });
 luckyDrawRedemptionSchema.index({ redeemedBy: 1 });
 luckyDrawRedemptionSchema.index({ createdAt: -1 });
 luckyDrawRedemptionSchema.index({ isDeleted: 1 });
+luckyDrawRedemptionSchema.index({ ticketCode: 1, isDeleted: 1 }, { sparse: true });
 
 // Static method to generate redemption number
 // Format: LDR-YYYYMMDD-NNNNNN (e.g., LDR-20260723-000001)
