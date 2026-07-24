@@ -94,7 +94,13 @@ export const getAllInventory = asyncErrorHandler(async (req, res, next) => {
   sort[sortBy] = sortOrder === "asc" ? 1 : -1;
 
   // Build query chain
-  let queryChain = Inventory.find(query).sort(sort);
+  let queryChain = Inventory.find(query)
+    .populate({
+      path: "suppliers",
+      match: { isDeleted: false },
+      select: "supplierName contactNumber address",
+    })
+    .sort(sort);
 
   // Apply pagination only if page or limit is provided
   const usePagination = page !== undefined || limit !== undefined;
@@ -144,7 +150,11 @@ export const getInventoryById = asyncErrorHandler(async (req, res, next) => {
     return next(new CustomError(400, "Invalid inventory ID format"));
   }
 
-  const inventory = await Inventory.findById(id);
+  const inventory = await Inventory.findById(id).populate({
+    path: "suppliers",
+    match: { isDeleted: false },
+    select: "supplierName contactNumber address",
+  });
 
   if (!inventory) {
     return next(new CustomError(404, "Inventory item not found"));

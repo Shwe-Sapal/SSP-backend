@@ -130,6 +130,12 @@ const inventorySchema = new mongoose.Schema(
       maxlength: [1000, "Note cannot exceed 1000 characters"],
       default: "",
     },
+    suppliers: [
+      {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: "SupplierProfile",
+      },
+    ],
     // createdBy: {
     //   type: mongoose.Schema.Types.ObjectId,
     //   ref: "User",

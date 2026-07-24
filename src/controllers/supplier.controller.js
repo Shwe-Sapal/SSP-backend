@@ -5,7 +5,7 @@ import mongoose from "mongoose";
 
 export const createSupplierProfile = asyncErrorHandler(
   async (req, res, next) => {
-    const { supplierName, contactNumber } = req.body;
+    const { supplierName, contactNumber, address } = req.body;
 
     if (!supplierName || !contactNumber) {
       return next(new CustomError(400, "All fields are required"));
@@ -14,6 +14,7 @@ export const createSupplierProfile = asyncErrorHandler(
     const supplier = await SupplierProfile.create({
       supplierName,
       contactNumber,
+      address: address || undefined,
     });
 
     res.status(201).json({
@@ -92,13 +93,19 @@ export const getSupplierProfileById = asyncErrorHandler(
 export const updateSupplierProfile = asyncErrorHandler(
   async (req, res, next) => {
     const { id } = req.params;
-    const { supplierName, contactNumber } = req.body;
+    const { supplierName, contactNumber, address } = req.body;
     if (!mongoose.Types.ObjectId.isValid(id)) {
       return next(new CustomError(400, "Invalid supplier profile ID format"));
     }
+
+    const updateFields = {};
+    if (supplierName !== undefined) updateFields.supplierName = supplierName;
+    if (contactNumber !== undefined) updateFields.contactNumber = contactNumber;
+    if (address !== undefined) updateFields.address = address;
+
     const supplier = await SupplierProfile.findByIdAndUpdate(
       id,
-      { $set: { supplierName, contactNumber } },
+      { $set: updateFields },
       { new: true, runValidators: true }
     );
     if (!supplier) {
