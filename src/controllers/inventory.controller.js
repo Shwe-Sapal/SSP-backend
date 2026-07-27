@@ -67,6 +67,7 @@ export const getAllInventory = asyncErrorHandler(async (req, res, next) => {
     category,
     status,
     search,
+    supplier,
     sortBy = "createdAt",
     sortOrder = "desc",
   } = req.query;
@@ -80,6 +81,10 @@ export const getAllInventory = asyncErrorHandler(async (req, res, next) => {
 
   if (status) {
     query.status = status;
+  }
+
+  if (supplier) {
+    query.suppliers = supplier;
   }
 
   if (search) {
