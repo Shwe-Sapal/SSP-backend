@@ -11,10 +11,12 @@ const supplierProfileSchema = new mongoose.Schema(
       required: true,
     },
     address: {
-      street: { type: String, trim: true },
-      township: { type: String, trim: true },
-      city: { type: String, trim: true },
-      state: { type: String, trim: true },
+      type: String,
+      trim: true,
+    },
+    township: {
+      type: String,
+      trim: true,
     },
     isDeleted: {
       type: Boolean,
@@ -34,7 +36,7 @@ const supplierProfileSchema = new mongoose.Schema(
 );
 
 // Indexes for query performance
-supplierProfileSchema.index({ "address.township": 1 });
+supplierProfileSchema.index({ township: 1 });
 
 const SupplierProfile = mongoose.model(
   "SupplierProfile",
