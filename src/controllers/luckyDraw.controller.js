@@ -279,31 +279,38 @@ export const processRedemption = asyncErrorHandler(async (req, res, next) => {
 
 // GET Redemptions (list with date filter)
 export const getRedemptions = asyncErrorHandler(async (req, res, next) => {
-  const { page = 1, limit = 20 } = req.query;
-  const skip = (page - 1) * limit;
+  const { page = 1, limit = 10, search, startDate, endDate } = req.query;
+  const skip = (Number(page) - 1) * Number(limit);
 
   const filter = { isDeleted: false };
 
-  // Apply date filter if startDate/endDate provided
-  try {
-    const dateFilter = createDateFilter(req.query, "createdAt");
-    if (Object.keys(dateFilter).length > 0) {
-      Object.assign(filter, dateFilter);
-    }
-  } catch (error) {
-    return next(error);
+  // Search logic
+  if (search) {
+    filter.$or = [
+      { redemptionNumber: { $regex: search, $options: "i" } },
+      { customerName: { $regex: search, $options: "i" } },
+      { ticketCode: { $regex: search, $options: "i" } },
+    ];
   }
 
-  const redemptions = await LuckyDrawRedemption.find(filter)
-    .populate("promotionId", "promotionName ticketName redemptionPrice")
-    .populate("inventoryId", "productName productCode")
-    .populate("storefrontId", "locationName locationCode")
-    .populate("redeemedBy", "name")
-    .skip(skip)
-    .limit(Number(limit))
-    .sort({ createdAt: -1 });
+  // Date Logic
+  if (startDate || endDate) {
+    filter.createdAt = {};
+    if (startDate) filter.createdAt.$gte = new Date(startDate);
+    if (endDate) filter.createdAt.$lte = new Date(endDate);
+  }
 
-  const total = await LuckyDrawRedemption.countDocuments(filter);
+  const [totalItems, redemptions] = await Promise.all([
+    LuckyDrawRedemption.countDocuments(filter),
+    LuckyDrawRedemption.find(filter)
+      .populate("promotionId", "promotionName ticketName redemptionPrice")
+      .populate("inventoryId", "productName productCode")
+      .populate("storefrontId", "locationName locationCode")
+      .populate("redeemedBy", "name")
+      .skip(skip)
+      .limit(Number(limit))
+      .sort({ createdAt: -1 }),
+  ]);
 
   res.status(200).json({
     success: true,
@@ -311,8 +318,8 @@ export const getRedemptions = asyncErrorHandler(async (req, res, next) => {
     data: { redemptions },
     pagination: {
       currentPage: Number(page),
-      totalPages: Math.ceil(total / Number(limit)),
-      totalItems: total,
+      totalPages: Math.ceil(totalItems / Number(limit)),
+      totalItems,
       itemsPerPage: Number(limit),
     },
   });
