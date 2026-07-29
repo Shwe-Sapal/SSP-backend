@@ -369,6 +369,76 @@ export const updateInventory = asyncErrorHandler(async (req, res, next) => {
   });
 });
 
+// Bulk link products to suppliers
+export const bulkLinkSuppliers = asyncErrorHandler(async (req, res, next) => {
+  const { productIds, supplierIds } = req.body;
+
+  if (!Array.isArray(productIds) || productIds.length === 0) {
+    return next(new CustomError(400, "Please provide an array of productIds"));
+  }
+  if (!Array.isArray(supplierIds) || supplierIds.length === 0) {
+    return next(new CustomError(400, "Please provide an array of supplierIds"));
+  }
+
+  // Validate ObjectIds
+  const isValidProductIds = productIds.every((id) => mongoose.Types.ObjectId.isValid(id));
+  const isValidSupplierIds = supplierIds.every((id) => mongoose.Types.ObjectId.isValid(id));
+
+  if (!isValidProductIds) {
+    return next(new CustomError(400, "One or more product IDs are invalid"));
+  }
+  if (!isValidSupplierIds) {
+    return next(new CustomError(400, "One or more supplier IDs are invalid"));
+  }
+
+  const result = await Inventory.updateMany(
+    { _id: { $in: productIds }, isDeleted: { $ne: true } },
+    { $addToSet: { suppliers: { $each: supplierIds } } }
+  );
+
+  res.status(200).json({
+    success: true,
+    message: `${productIds.length} product(s) linked with ${supplierIds.length} supplier(s)`,
+    matchedCount: result.matchedCount,
+    modifiedCount: result.modifiedCount,
+  });
+});
+
+// Bulk unlink products from suppliers
+export const bulkUnlinkSuppliers = asyncErrorHandler(async (req, res, next) => {
+  const { productIds, supplierIds } = req.body;
+
+  if (!Array.isArray(productIds) || productIds.length === 0) {
+    return next(new CustomError(400, "Please provide an array of productIds"));
+  }
+  if (!Array.isArray(supplierIds) || supplierIds.length === 0) {
+    return next(new CustomError(400, "Please provide an array of supplierIds"));
+  }
+
+  // Validate ObjectIds
+  const isValidProductIds = productIds.every((id) => mongoose.Types.ObjectId.isValid(id));
+  const isValidSupplierIds = supplierIds.every((id) => mongoose.Types.ObjectId.isValid(id));
+
+  if (!isValidProductIds) {
+    return next(new CustomError(400, "One or more product IDs are invalid"));
+  }
+  if (!isValidSupplierIds) {
+    return next(new CustomError(400, "One or more supplier IDs are invalid"));
+  }
+
+  const result = await Inventory.updateMany(
+    { _id: { $in: productIds }, isDeleted: { $ne: true } },
+    { $pull: { suppliers: { $in: supplierIds } } }
+  );
+
+  res.status(200).json({
+    success: true,
+    message: `Supplier(s) removed from ${productIds.length} product(s)`,
+    matchedCount: result.matchedCount,
+    modifiedCount: result.modifiedCount,
+  });
+});
+
 // Bulk import inventory from Excel file
 export const importInventoryFromExcel = asyncErrorHandler(
   async (req, res, next) => {

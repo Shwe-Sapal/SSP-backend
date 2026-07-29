@@ -7,6 +7,8 @@ import {
   updateInventory,
   importInventoryFromExcel,
   getAllCategories,
+  bulkLinkSuppliers,
+  bulkUnlinkSuppliers,
 } from "../controllers/inventory.controller.js";
 import { protect } from "../controllers/administrationPolicy.controller.js";
 import { permissionGranted } from "../controllers/administrationPolicy.controller.js";
@@ -42,6 +44,22 @@ router.post(
   permissionGranted("owner", "admin"),
   upload.single("file"),
   importInventoryFromExcel,
+);
+
+// Bulk link products to suppliers
+router.post(
+  "/inventory/bulk-link-suppliers",
+  protect,
+  permissionGranted("owner", "admin"),
+  bulkLinkSuppliers,
+);
+
+// Bulk unlink products from suppliers
+router.post(
+  "/inventory/bulk-unlink-suppliers",
+  protect,
+  permissionGranted("owner", "admin"),
+  bulkUnlinkSuppliers,
 );
 
 // Get all unique categories
