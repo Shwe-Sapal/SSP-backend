@@ -6,7 +6,7 @@ import Inventory from "../models/inventory.model.js";
 import { createDateFilter } from "../utils/dateFilter.utils.js";
 
 export const createPurchase = asyncErrorHandler(async (req, res, next) => {
-  const { supplierId, products, note, totalAmount } = req.body;
+  const { supplierId, products, note, totalAmount, paymentType, paidAmount, dueDate } = req.body;
   const purchasedBy = req.user._id;
 
   if (!supplierId || !products || products.length === 0) {
@@ -42,6 +42,14 @@ export const createPurchase = asyncErrorHandler(async (req, res, next) => {
     })
   );
 
+  // Handle payment logic
+  let finalPaidAmount = 0;
+  if (paymentType === "credit") {
+    finalPaidAmount = paidAmount || 0;
+  } else {
+    finalPaidAmount = totalAmount;
+  }
+
   // Generate PO number
   const poNumber = await Purchasing.generatePONumber();
 
@@ -51,6 +59,9 @@ export const createPurchase = asyncErrorHandler(async (req, res, next) => {
     products: productsWithDetails,
     note: note || "No note available",
     totalAmount,
+    paymentType: paymentType || "paid",
+    paidAmount: finalPaidAmount,
+    dueDate: paymentType === "credit" ? dueDate : null,
     status: "pending",
     purchasedBy,
   });
@@ -70,6 +81,8 @@ export const getAllPurchases = asyncErrorHandler(async (req, res, next) => {
     sortOrder = "desc",
     isDeleted,
     status,
+    paymentType,
+    paymentStatus,
   } = req.query;
 
   // Build query
@@ -114,6 +127,37 @@ export const getAllPurchases = asyncErrorHandler(async (req, res, next) => {
       );
     }
     query.status = status;
+  }
+
+  // Filter by paymentType if provided
+  if (paymentType !== undefined) {
+    const validPaymentTypes = ["credit", "paid"];
+    if (!validPaymentTypes.includes(paymentType)) {
+      return next(
+        new CustomError(
+          400,
+          `Invalid paymentType. Allowed values: ${validPaymentTypes.join(", ")}`
+        )
+      );
+    }
+    query.paymentType = paymentType;
+  }
+
+  // Filter by paymentStatus custom logic
+  if (paymentStatus !== undefined) {
+    if (paymentStatus === "paid") {
+      query.$expr = { $gte: ["$paidAmount", "$totalAmount"] };
+    } else if (paymentStatus === "partial") {
+      query.$expr = {
+        $and: [{ $gt: ["$paidAmount", 0] }, { $lt: ["$paidAmount", "$totalAmount"] }],
+      };
+    } else if (paymentStatus === "unpaid") {
+      query.$expr = { $lte: ["$paidAmount", 0] };
+    } else {
+      return next(
+        new CustomError(400, "Invalid paymentStatus. Allowed values: paid, partial, unpaid")
+      );
+    }
   }
 
   // Add date range filter using dateFilter utility

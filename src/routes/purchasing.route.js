@@ -8,6 +8,12 @@ import {
   restorePurchase,
 } from "../controllers/purchase.controller.js";
 import {
+  createSupplierPayment,
+  getPaymentsByPurchaseId,
+  getPaymentsBySupplierId,
+  hardDeleteSupplierPayment,
+} from "../controllers/supplierPayment.controller.js";
+import {
   protect,
   permissionGranted,
 } from "../controllers/administrationPolicy.controller.js";
@@ -50,4 +56,34 @@ router.patch(
   permissionGranted("owner"),
   restorePurchase
 );
+
+// Supplier Payment Routes
+router.post(
+  "/purchase/:id/payment",
+  protect,
+  permissionGranted("owner", "admin"),
+  createSupplierPayment
+);
+
+router.get(
+  "/purchase/:id/payments",
+  protect,
+  permissionGranted("owner", "admin"),
+  getPaymentsByPurchaseId
+);
+
+router.get(
+  "/supplier/:supplierId/payments",
+  protect,
+  permissionGranted("owner", "admin"),
+  getPaymentsBySupplierId
+);
+
+router.delete(
+  "/supplier-payment/:id",
+  protect,
+  permissionGranted("owner", "admin"),
+  hardDeleteSupplierPayment
+);
+
 export default router;

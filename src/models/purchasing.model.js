@@ -94,6 +94,19 @@ const PurchasingSchema = new mongoose.Schema(
       ref: "Admin",
       required: [true, "Purchased by is required"],
     },
+    paymentType: {
+      type: String,
+      enum: ["credit", "paid"],
+      default: "paid",
+    },
+    paidAmount: {
+      type: Number,
+      default: 0,
+    },
+    dueDate: {
+      type: Date,
+      default: null,
+    },
     isDeleted: {
       type: Boolean,
       default: false,
@@ -110,6 +123,33 @@ const PurchasingSchema = new mongoose.Schema(
     toObject: { virtuals: true },
   }
 );
+
+// Virtual for remaining balance
+PurchasingSchema.virtual("remainingBalance").get(function () {
+  return Math.max(0, (this.totalAmount || 0) - (this.paidAmount || 0));
+});
+
+// Virtual for fully paid status
+PurchasingSchema.virtual("isFullyPaid").get(function () {
+  const remaining = Math.max(0, (this.totalAmount || 0) - (this.paidAmount || 0));
+  return remaining <= 0;
+});
+
+// Virtual for payment status
+PurchasingSchema.virtual("paymentStatus").get(function () {
+  const remaining = Math.max(0, (this.totalAmount || 0) - (this.paidAmount || 0));
+  if (remaining <= 0) return "paid";
+  if (this.paidAmount > 0) return "partial";
+  return "unpaid";
+});
+
+// Pre-save hook to update status if fully paid
+PurchasingSchema.pre("save", function (next) {
+  if (this.paymentType === "credit" && this.paidAmount >= this.totalAmount) {
+    this.status = "completed";
+  }
+  next();
+});
 
 // Static method to generate PO number
 // Format: PO-YYYY-MM-DD-NNNNNN (e.g., PO-2024-01-14-000001)
@@ -152,6 +192,8 @@ PurchasingSchema.index({ supplierId: 1 });
 PurchasingSchema.index({ createdAt: -1 });
 PurchasingSchema.index({ isDeleted: 1 });
 PurchasingSchema.index({ status: 1, isDeleted: 1 }); // Compound index for common queries
+PurchasingSchema.index({ paymentType: 1 });
+PurchasingSchema.index({ paidAmount: 1 });
 
 const Purchasing = mongoose.model("Purchasing", PurchasingSchema);
 
