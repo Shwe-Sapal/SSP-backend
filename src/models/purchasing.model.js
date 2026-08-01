@@ -144,11 +144,10 @@ PurchasingSchema.virtual("paymentStatus").get(function () {
 });
 
 // Pre-save hook to update status if fully paid
-PurchasingSchema.pre("save", function (next) {
+PurchasingSchema.pre("save", function () {
   if (this.paymentType === "credit" && this.paidAmount >= this.totalAmount) {
     this.status = "completed";
   }
-  next();
 });
 
 // Static method to generate PO number
