@@ -49,7 +49,7 @@ export const createSupplierPayment = asyncErrorHandler(async (req, res, next) =>
     // Update PO's paidAmount
     purchase.paidAmount += paidAmount;
     
-    // Save purchase to trigger pre-save hook for status if applicable
+    // Save purchase with updated paidAmount
     await purchase.save({ session });
 
     await session.commitTransaction();
@@ -116,12 +116,6 @@ export const hardDeleteSupplierPayment = asyncErrorHandler(async (req, res, next
     if (purchase) {
       // Revert the PO's paidAmount
       purchase.paidAmount -= payment.paidAmount;
-      
-      // If the status was updated to completed due to full payment, revert it
-      if (purchase.status === "completed" && purchase.paidAmount < purchase.totalAmount) {
-        // We revert to pending. (or whatever makes sense in your workflow)
-        purchase.status = "pending";
-      }
 
       await purchase.save({ session });
     }

@@ -7,6 +7,7 @@ import {
   softDeleteSupplierProfile,
   restoreSupplierProfile,
   deleteSupplierProfile,
+  getSupplierPurchasingStats,
 } from "../controllers/supplier.controller.js";
 import { protect } from "../controllers/administrationPolicy.controller.js";
 import { permissionGranted } from "../controllers/administrationPolicy.controller.js";
@@ -29,6 +30,18 @@ router.get(
   protect,
   permissionGranted("owner", "admin"),
   getSupplierProfileById
+);
+router.get(
+  "/supplier/:id/purchasing-stats",
+  protect,
+  permissionGranted("owner", "admin"),
+  getSupplierPurchasingStats
+);
+router.get(
+  "/supplier-profile/:id/purchasing-stats",
+  protect,
+  permissionGranted("owner", "admin"),
+  getSupplierPurchasingStats
 );
 router.patch(
   "/supplier-profile/:id",

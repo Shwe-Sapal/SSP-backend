@@ -143,12 +143,6 @@ PurchasingSchema.virtual("paymentStatus").get(function () {
   return "unpaid";
 });
 
-// Pre-save hook to update status if fully paid
-PurchasingSchema.pre("save", function () {
-  if (this.paymentType === "credit" && this.paidAmount >= this.totalAmount) {
-    this.status = "completed";
-  }
-});
 
 // Static method to generate PO number
 // Format: PO-YYYY-MM-DD-NNNNNN (e.g., PO-2024-01-14-000001)

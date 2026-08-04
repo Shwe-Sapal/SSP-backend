@@ -1,4 +1,5 @@
 import SupplierProfile from "../models/supplierProfile.model.js";
+import Purchasing from "../models/purchasing.model.js";
 import { asyncErrorHandler } from "../utils/asyncErrorHandler.js";
 import CustomError from "../utils/customError.js";
 import mongoose from "mongoose";
@@ -196,13 +197,52 @@ export const deleteSupplierProfile = asyncErrorHandler(
       message: "Supplier profile deleted successfully",
       data: deletedSupplier,
     });
-    if (!deletedSupplier) {
+  }
+);
+
+export const getSupplierPurchasingStats = asyncErrorHandler(
+  async (req, res, next) => {
+    const { id } = req.params;
+
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return next(new CustomError(400, "Invalid supplier ID format"));
+    }
+
+    const supplier = await SupplierProfile.findById(id);
+    if (!supplier) {
       return next(new CustomError(404, "Supplier profile not found"));
     }
+
+    // Retrieve all non-deleted purchase orders for this supplier sorted by date descending
+    const purchaseOrders = await Purchasing.find({
+      supplierId: id,
+      isDeleted: false,
+    })
+      .populate("purchasedBy", "name role")
+      .sort({ createdAt: -1 });
+
+    // Calculate purchasing statistics
+    const totalPurchasedAmount = purchaseOrders.reduce(
+      (sum, po) => sum + (po.totalAmount || 0),
+      0
+    );
+    const totalPaidAmount = purchaseOrders.reduce(
+      (sum, po) => sum + (po.paidAmount || 0),
+      0
+    );
+    const totalDebt = totalPurchasedAmount - totalPaidAmount;
+
     res.status(200).json({
       success: true,
-      message: "Supplier profile deleted successfully",
-      data: deletedSupplier,
+      message: "Supplier purchasing statistics retrieved successfully",
+      data: {
+        statistics: {
+          totalPurchasedAmount,
+          totalPaidAmount,
+          totalDebt,
+        },
+        purchaseOrders,
+      },
     });
   }
 );
