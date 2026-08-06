@@ -63,15 +63,15 @@ const transferSchema = new mongoose.Schema(
       type: mongoose.Schema.Types.ObjectId,
       ref: "LocationProfile",
       default: null,
-      // Required when sourceType is "GRN" (GRN → Warehouse transfer)
-      // Optional when sourceType is "Warehouse" (Warehouse → Storefront transfer)
+      // Required when sourceType is "GRN" and destination is Warehouse
+      // Optional otherwise
     },
     destinationStorefrontId: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "LocationProfile",
       default: null,
-      // Required when sourceType is "Warehouse" (Warehouse → Storefront transfer)
-      // Optional when sourceType is "GRN" (GRN → Warehouse transfer)
+      // Required when sourceType is "Warehouse" OR when sourceType is "GRN" and destination is Storefront
+      // Optional otherwise
     },
     lineItems: {
       type: [transferLineItemSchema],
@@ -132,9 +132,14 @@ const transferSchema = new mongoose.Schema(
 // Pre-save validation: Ensure correct destination based on sourceType
 transferSchema.pre("save", async function () {
   if (this.sourceType === "GRN") {
-    if (!this.destinationWarehouseId) {
+    if (!this.destinationWarehouseId && !this.destinationStorefrontId) {
       throw new Error(
-        "destinationWarehouseId is required when sourceType is 'GRN' (GRN → Warehouse transfer)"
+        "Either destinationWarehouseId or destinationStorefrontId is required when sourceType is 'GRN'"
+      );
+    }
+    if (this.destinationWarehouseId && this.destinationStorefrontId) {
+      throw new Error(
+        "Cannot specify both destinationWarehouseId and destinationStorefrontId"
       );
     }
   } else if (this.sourceType === "Warehouse") {
@@ -198,6 +203,7 @@ transferSchema.statics.generateTransferNumber = async function () {
 // Instance method to update stock atomically (call when transfer is completed)
 // Uses MongoDB transactions to ensure ACID properties for consistent tracking:
 // For GRN → Warehouse: Updates GRN transferredQuantity + WarehouseStock
+// For GRN → Storefront: Updates GRN transferredQuantity + StorefrontInventory
 // For Warehouse → Storefront: Updates WarehouseStock + StorefrontInventory
 // All operations succeed or all fail (ACID guarantee)
 transferSchema.methods.updateStock = async function (session = null) {
@@ -206,17 +212,25 @@ transferSchema.methods.updateStock = async function (session = null) {
   }
 
   // Validate destination based on sourceType
-  if (this.sourceType === "GRN" && !this.destinationWarehouseId) {
-    throw new Error("GRN transfers require destinationWarehouseId");
+  if (this.sourceType === "GRN") {
+    if (!this.destinationWarehouseId && !this.destinationStorefrontId) {
+      throw new Error(
+        "GRN transfers require destinationWarehouseId or destinationStorefrontId"
+      );
+    }
   }
 
   if (this.sourceType === "Warehouse" && !this.destinationStorefrontId) {
     throw new Error("Warehouse transfers require destinationStorefrontId");
   }
 
-  // Handle GRN → Warehouse transfers
+  // Handle GRN transfers (to Warehouse or Storefront)
   if (this.sourceType === "GRN") {
-    await this._updateGRNToWarehouseStock(session);
+    if (this.destinationWarehouseId) {
+      await this._updateGRNToWarehouseStock(session);
+    } else if (this.destinationStorefrontId) {
+      await this._updateGRNToStorefrontStock(session);
+    }
   }
   // Handle Warehouse → Storefront transfers
   else if (this.sourceType === "Warehouse") {
@@ -314,6 +328,109 @@ transferSchema.methods._updateGRNToWarehouseStock = async function (
         $setOnInsert: {
           inventoryId: transferItem.inventoryId,
           warehouseId: this.destinationWarehouseId,
+          // quantity is handled by $inc - if document doesn't exist, $inc creates it with transferItem.quantity
+        },
+      },
+      {
+        upsert: true,
+        session,
+        new: true,
+        runValidators: true,
+      }
+    );
+  }
+};
+
+// Private method: Handle GRN → Storefront stock updates
+transferSchema.methods._updateGRNToStorefrontStock = async function (
+  session = null
+) {
+  const StorefrontInventory = mongoose.model("StorefrontInventory");
+  const GoodsRecievedNote = mongoose.model("GoodsRecievedNote");
+
+  // Fetch GRN to validate and update
+  const grn = await GoodsRecievedNote.findById(this.sourceId).session(
+    session || null
+  );
+
+  if (!grn) {
+    throw new Error(`GRN with ID ${this.sourceId} not found`);
+  }
+
+  // Process each transfer line item
+  for (const transferItem of this.lineItems) {
+    if (transferItem.quantity <= 0) continue;
+
+    // Find corresponding GRN line item
+    let grnLineItem = null;
+    let grnLineItemIndex = -1;
+    if (transferItem.grnLineItemId) {
+      // If grnLineItemId is provided, use it directly
+      grnLineItem = grn.lineItems.id(transferItem.grnLineItemId);
+      if (grnLineItem) {
+        grnLineItemIndex = grn.lineItems.findIndex(
+          (item) =>
+            item._id.toString() === transferItem.grnLineItemId.toString()
+        );
+      }
+    } else {
+      // Otherwise, find by inventoryId
+      grnLineItemIndex = grn.lineItems.findIndex(
+        (item) =>
+          item.inventoryId.toString() === transferItem.inventoryId.toString()
+      );
+      if (grnLineItemIndex !== -1) {
+        grnLineItem = grn.lineItems[grnLineItemIndex];
+      }
+    }
+
+    if (!grnLineItem || grnLineItemIndex === -1) {
+      throw new Error(
+        `GRN line item not found for inventory ${transferItem.inventoryId}`
+      );
+    }
+
+    // Validate available quantity
+    const availableQty =
+      grnLineItem.goodQuantity - (grnLineItem.transferredQuantity || 0);
+    if (transferItem.quantity > availableQty) {
+      throw new Error(
+        `Transfer quantity (${transferItem.quantity}) exceeds available quantity (${availableQty}) for inventory ${transferItem.inventoryId}`
+      );
+    }
+
+    // Update GRN line item's transferredQuantity atomically using $inc
+    // Uses positional operator $ to update the specific line item
+    const grnUpdateResult = await GoodsRecievedNote.findOneAndUpdate(
+      { _id: this.sourceId, "lineItems._id": grnLineItem._id },
+      {
+        $inc: {
+          [`lineItems.$.transferredQuantity`]: transferItem.quantity,
+        },
+      },
+      { new: true, session }
+    );
+
+    if (!grnUpdateResult) {
+      throw new Error(
+        `GRN line item with ID ${grnLineItem._id} not found or GRN not found.`
+      );
+    }
+
+    // Find or create storefront inventory record and update atomically using $inc
+    // Uses upsert to create if doesn't exist, or update if exists
+    // Note: $inc on a non-existent field treats it as 0, so no need for quantity in $setOnInsert
+    await StorefrontInventory.findOneAndUpdate(
+      {
+        inventoryId: transferItem.inventoryId,
+        storefrontId: this.destinationStorefrontId,
+      },
+      {
+        $inc: { quantity: transferItem.quantity },
+        $set: { lastUpdated: new Date() },
+        $setOnInsert: {
+          inventoryId: transferItem.inventoryId,
+          storefrontId: this.destinationStorefrontId,
           // quantity is handled by $inc - if document doesn't exist, $inc creates it with transferItem.quantity
         },
       },
