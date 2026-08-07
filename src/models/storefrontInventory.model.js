@@ -12,6 +12,19 @@ const storefrontInventorySchema = new mongoose.Schema(
       ref: "Inventory",
       required: [true, "Product is required"],
     },
+    batchNumber: {
+      type: String,
+      default: "__LEGACY__",
+      trim: true,
+    },
+    expiryDate: {
+      type: Date,
+      default: null,
+    },
+    manufacturingDate: {
+      type: Date,
+      default: null,
+    },
     quantity: {
       type: Number,
       required: [true, "Quantity is required"],
@@ -36,9 +49,9 @@ const storefrontInventorySchema = new mongoose.Schema(
   }
 );
 
-// Compound unique index: One stock record per product per storefront
+// Compound unique index: One stock record per product per storefront per batch
 storefrontInventorySchema.index(
-  { inventoryId: 1, storefrontId: 1 },
+  { inventoryId: 1, storefrontId: 1, batchNumber: 1 },
   { unique: true }
 );
 
@@ -47,6 +60,8 @@ storefrontInventorySchema.index({ storefrontId: 1 });
 storefrontInventorySchema.index({ inventoryId: 1 });
 storefrontInventorySchema.index({ storefrontId: 1, isLowStock: 1 }); // For low stock queries per storefront
 storefrontInventorySchema.index({ quantity: 1 }); // For sorting by quantity
+storefrontInventorySchema.index({ batchNumber: 1 });
+storefrontInventorySchema.index({ expiryDate: 1 });
 
 // Virtual for available quantity (same as quantity since we don't track reservations here)
 storefrontInventorySchema.virtual("availableQuantity").get(function () {
@@ -56,14 +71,20 @@ storefrontInventorySchema.virtual("availableQuantity").get(function () {
 // Static method to find or create stock record
 storefrontInventorySchema.statics.findOrCreateStock = async function (
   inventoryId,
-  storefrontId
+  storefrontId,
+  batchNumber = "__LEGACY__",
+  expiryDate = null,
+  manufacturingDate = null
 ) {
-  let stock = await this.findOne({ inventoryId, storefrontId });
+  let stock = await this.findOne({ inventoryId, storefrontId, batchNumber });
 
   if (!stock) {
     stock = await this.create({
       inventoryId,
       storefrontId,
+      batchNumber,
+      expiryDate,
+      manufacturingDate,
       quantity: 0,
     });
   }

@@ -10,6 +10,19 @@ const grnLineItemSchema = new mongoose.Schema(
       required: [true, "Product is required"],
       // Auto-filled from PO product based on productCode (handled in controller)
     },
+    batchNumber: {
+      type: String,
+      trim: true,
+      default: "__LEGACY__",
+    },
+    expiryDate: {
+      type: Date,
+      default: null,
+    },
+    manufacturingDate: {
+      type: Date,
+      default: null,
+    },
     receivedQuantity: {
       type: Number,
       required: [true, "Received quantity is required"],

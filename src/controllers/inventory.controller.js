@@ -2,6 +2,7 @@ import mongoose from "mongoose";
 import Inventory from "../models/inventory.model.js";
 import WarehouseStock from "../models/warehouse.model.js";
 import StorefrontInventory from "../models/storefrontInventory.model.js";
+import LocationProfile from "../models/locationProfile.model.js";
 import { asyncErrorHandler } from "../utils/asyncErrorHandler.js";
 import CustomError from "../utils/customError.js";
 import XLSX from "xlsx";
@@ -132,10 +133,74 @@ export const getAllInventory = asyncErrorHandler(async (req, res, next) => {
   // Execute query
   const inventory = await queryChain;
 
+  const productIds = inventory.map((item) => item._id);
+  const now = new Date();
+  const thirtyDaysFromNow = new Date(now.getTime() + 30 * 24 * 60 * 60 * 1000);
+
+  // Fetch stock records with expiry dates for these products across warehouses and storefronts
+  const [warehouseExpiryStocks, storefrontExpiryStocks] = await Promise.all([
+    WarehouseStock.find({
+      inventoryId: { $in: productIds },
+      expiryDate: { $ne: null },
+    })
+      .select("inventoryId expiryDate quantity")
+      .lean(),
+    StorefrontInventory.find({
+      inventoryId: { $in: productIds },
+      expiryDate: { $ne: null },
+    })
+      .select("inventoryId expiryDate quantity")
+      .lean(),
+  ]);
+
+  // Aggregate nearest expiry date per product
+  const nearestExpiryByProduct = new Map();
+
+  const processStock = (stock) => {
+    if (!stock.expiryDate) return;
+    const invIdStr = stock.inventoryId.toString();
+    const expiry = new Date(stock.expiryDate);
+    if (isNaN(expiry.getTime())) return;
+
+    if (!nearestExpiryByProduct.has(invIdStr)) {
+      nearestExpiryByProduct.set(invIdStr, expiry);
+    } else {
+      const currentNearest = nearestExpiryByProduct.get(invIdStr);
+      if (expiry < currentNearest) {
+        nearestExpiryByProduct.set(invIdStr, expiry);
+      }
+    }
+  };
+
+  warehouseExpiryStocks.forEach(processStock);
+  storefrontExpiryStocks.forEach(processStock);
+
+  // Inject nearestExpiryDate, isExpired, isExpiringSoon into each product object
+  const enhancedInventory = inventory.map((item) => {
+    const itemObj = item.toObject ? item.toObject() : { ...item };
+    const nearestExpiry =
+      nearestExpiryByProduct.get(item._id.toString()) || null;
+
+    let isExpired = false;
+    let isExpiringSoon = false;
+
+    if (nearestExpiry) {
+      isExpired = nearestExpiry < now;
+      isExpiringSoon = !isExpired && nearestExpiry <= thirtyDaysFromNow;
+    }
+
+    return {
+      ...itemObj,
+      nearestExpiryDate: nearestExpiry,
+      isExpired,
+      isExpiringSoon,
+    };
+  });
+
   const response = {
     success: true,
     message: "Inventory items retrieved successfully",
-    data: inventory,
+    data: enhancedInventory,
   };
 
   // Only include pagination info if pagination was applied
@@ -173,7 +238,9 @@ export const getInventoryById = asyncErrorHandler(async (req, res, next) => {
       "warehouseId",
       "locationName locationCode locationAddress type status",
     )
-    .select("warehouseId quantity lastUpdated");
+    .select(
+      "warehouseId quantity batchNumber expiryDate manufacturingDate lastUpdated",
+    );
 
   // Get stock availability for all storefronts
   const storefrontStocks = await StorefrontInventory.find({
@@ -183,7 +250,9 @@ export const getInventoryById = asyncErrorHandler(async (req, res, next) => {
       "storefrontId",
       "locationName locationCode locationAddress type status",
     )
-    .select("storefrontId quantity lastUpdated");
+    .select(
+      "storefrontId quantity batchNumber expiryDate manufacturingDate lastUpdated",
+    );
 
   // Format warehouse stock data - filter out null warehouseId (deleted locations)
   const warehouseStockAvailability = warehouseStocks
@@ -191,12 +260,16 @@ export const getInventoryById = asyncErrorHandler(async (req, res, next) => {
       (stock) => stock.warehouseId !== null && stock.warehouseId !== undefined,
     )
     .map((stock) => ({
+      stockId: stock._id,
       locationId: stock.warehouseId._id,
       locationName: stock.warehouseId.locationName,
       locationCode: stock.warehouseId.locationCode,
       locationAddress: stock.warehouseId.locationAddress,
       locationType: stock.warehouseId.type,
       status: stock.warehouseId.status,
+      batchNumber: stock.batchNumber || "__LEGACY__",
+      expiryDate: stock.expiryDate || null,
+      manufacturingDate: stock.manufacturingDate || null,
       quantity: stock.quantity,
       lastUpdated: stock.lastUpdated,
     }));
@@ -208,12 +281,16 @@ export const getInventoryById = asyncErrorHandler(async (req, res, next) => {
         stock.storefrontId !== null && stock.storefrontId !== undefined,
     )
     .map((stock) => ({
+      stockId: stock._id,
       locationId: stock.storefrontId._id,
       locationName: stock.storefrontId.locationName,
       locationCode: stock.storefrontId.locationCode,
       locationAddress: stock.storefrontId.locationAddress,
       locationType: stock.storefrontId.type,
       status: stock.storefrontId.status,
+      batchNumber: stock.batchNumber || "__LEGACY__",
+      expiryDate: stock.expiryDate || null,
+      manufacturingDate: stock.manufacturingDate || null,
       quantity: stock.quantity,
       lastUpdated: stock.lastUpdated,
     }));
@@ -632,13 +709,143 @@ export const importInventoryFromExcel = asyncErrorHandler(
           inventoryData.wholesalePrices = wholesalePrices;
         }
 
+        // Parse optional batchNumber, expiryDate, and manufacturingDate
+        const rawBatchNumber =
+          row.batchNumber ||
+          row.batch_number ||
+          row["Batch Number"] ||
+          row["Batch No"] ||
+          row["Batch"] ||
+          row["batch"];
+        const batchNumber = rawBatchNumber
+          ? String(rawBatchNumber).trim()
+          : null;
+
+        const rawExpiryDate =
+          row.expiryDate ||
+          row.expiry_date ||
+          row["Expiry Date"] ||
+          row["Expiration Date"] ||
+          row["expiry"];
+        let parsedExpiryDate = null;
+        if (
+          rawExpiryDate !== undefined &&
+          rawExpiryDate !== null &&
+          rawExpiryDate !== ""
+        ) {
+          if (typeof rawExpiryDate === "number") {
+            // Excel serial date number conversion (1900 date system)
+            parsedExpiryDate = new Date(
+              Math.round((rawExpiryDate - 25569) * 86400 * 1000)
+            );
+          } else {
+            parsedExpiryDate = new Date(rawExpiryDate);
+          }
+          if (isNaN(parsedExpiryDate.getTime())) {
+            parsedExpiryDate = null;
+          }
+        }
+
+        const rawManufacturingDate =
+          row.manufacturingDate ||
+          row.manufacturing_date ||
+          row["Manufacturing Date"] ||
+          row["Mfg Date"] ||
+          row["mfgDate"];
+        let parsedManufacturingDate = null;
+        if (
+          rawManufacturingDate !== undefined &&
+          rawManufacturingDate !== null &&
+          rawManufacturingDate !== ""
+        ) {
+          if (typeof rawManufacturingDate === "number") {
+            parsedManufacturingDate = new Date(
+              Math.round((rawManufacturingDate - 25569) * 86400 * 1000)
+            );
+          } else {
+            parsedManufacturingDate = new Date(rawManufacturingDate);
+          }
+          if (isNaN(parsedManufacturingDate.getTime())) {
+            parsedManufacturingDate = null;
+          }
+        }
+
         const newItem = await Inventory.create(inventoryData);
+
+        // If batchNumber, expiryDate, or initial stock quantity is provided, create initial warehouse stock
+        if (
+          batchNumber ||
+          parsedExpiryDate ||
+          parsedManufacturingDate ||
+          row.initialQuantity ||
+          row.quantity ||
+          row.stock ||
+          row["Initial Stock"] ||
+          row["Quantity"]
+        ) {
+          const initialQty = Number(
+            row.initialQuantity ||
+              row.quantity ||
+              row.stock ||
+              row["Initial Stock"] ||
+              row["Quantity"] ||
+              0
+          );
+          const warehouseIdentifier =
+            row.warehouseId ||
+            row.warehouse ||
+            row.warehouseCode ||
+            row["Warehouse Code"] ||
+            row["Warehouse"];
+
+          let warehouse = null;
+          if (warehouseIdentifier) {
+            if (mongoose.Types.ObjectId.isValid(warehouseIdentifier)) {
+              warehouse = await LocationProfile.findOne({
+                _id: warehouseIdentifier,
+                type: "warehouse",
+                isDeleted: false,
+              });
+            }
+            if (!warehouse) {
+              warehouse = await LocationProfile.findOne({
+                type: "warehouse",
+                isDeleted: false,
+                $or: [
+                  { locationCode: String(warehouseIdentifier).toUpperCase() },
+                  { locationName: String(warehouseIdentifier) },
+                ],
+              });
+            }
+          } else {
+            // Pick default active warehouse if available
+            warehouse = await LocationProfile.findOne({
+              type: "warehouse",
+              status: "active",
+              isDeleted: false,
+            });
+          }
+
+          if (warehouse) {
+            await WarehouseStock.create({
+              inventoryId: newItem._id,
+              warehouseId: warehouse._id,
+              batchNumber: batchNumber || "__LEGACY__",
+              expiryDate: parsedExpiryDate,
+              manufacturingDate: parsedManufacturingDate,
+              quantity: !isNaN(initialQty) && initialQty > 0 ? initialQty : 0,
+            });
+          }
+        }
+
         results.success++;
         results.created.push({
           row: rowNum,
           id: newItem._id,
           productCode: newItem.productCode,
           productName: newItem.productName,
+          ...(batchNumber && { batchNumber }),
+          ...(parsedExpiryDate && { expiryDate: parsedExpiryDate }),
         });
       } catch (error) {
         results.failed++;

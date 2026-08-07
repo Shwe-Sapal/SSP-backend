@@ -6,6 +6,20 @@ import { asyncErrorHandler } from "../utils/asyncErrorHandler.js";
 import CustomError from "../utils/customError.js";
 import { createDateFilter } from "../utils/dateFilter.utils.js";
 
+// Helper function to generate unique batch number in format BAT-YYYYMMDD-XXXX
+const generateBatchNumber = () => {
+  const now = new Date();
+  const year = now.getFullYear();
+  const month = String(now.getMonth() + 1).padStart(2, "0");
+  const day = String(now.getDate()).padStart(2, "0");
+  const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+  let randomStr = "";
+  for (let i = 0; i < 4; i++) {
+    randomStr += chars.charAt(Math.floor(Math.random() * chars.length));
+  }
+  return `BAT-${year}${month}${day}-${randomStr}`;
+};
+
 // Create new GRN (Supports Partial GRN - Can receive one or more items from PO)
 export const createGRN = asyncErrorHandler(async (req, res, next) => {
   const { purchasingId, grnDate, lineItems, notes } = req.body;
@@ -256,9 +270,24 @@ export const createGRN = asyncErrorHandler(async (req, res, next) => {
     // You pay for what you receive (good + bad), not just good quantity
     const totalPrice = receivedQuantity * unitPrice;
 
+    // Handle batch number, expiry date, and manufacturing date
+    const batchNumber =
+      userItem.batchNumber && String(userItem.batchNumber).trim() !== ""
+        ? String(userItem.batchNumber).trim()
+        : generateBatchNumber();
+    const expiryDate = userItem.expiryDate
+      ? new Date(userItem.expiryDate)
+      : null;
+    const manufacturingDate = userItem.manufacturingDate
+      ? new Date(userItem.manufacturingDate)
+      : null;
+
     // Build line item with all data auto-filled from PO
     const grnLineItem = {
       inventoryId: inventoryIdValue, // Auto-filled from PO or looked up by productCode
+      batchNumber,
+      expiryDate,
+      manufacturingDate,
       receivedQuantity: receivedQuantity, // Auto-calculated: goodQuantity + badQuantity
       goodQuantity: userItem.goodQuantity, // User provides
       badQuantity: userItem.badQuantity, // User provides

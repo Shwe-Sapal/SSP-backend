@@ -8,6 +8,19 @@ const transferLineItemSchema = new mongoose.Schema(
       ref: "Inventory",
       required: [true, "Product is required"],
     },
+    batchNumber: {
+      type: String,
+      trim: true,
+      default: "__LEGACY__",
+    },
+    expiryDate: {
+      type: Date,
+      default: null,
+    },
+    manufacturingDate: {
+      type: Date,
+      default: null,
+    },
     quantity: {
       type: Number,
       required: [true, "Transfer quantity is required"],
@@ -314,6 +327,13 @@ transferSchema.methods._updateGRNToWarehouseStock = async function (
       );
     }
 
+    const batchNumber =
+      transferItem.batchNumber || grnLineItem?.batchNumber || "__LEGACY__";
+    const expiryDate =
+      transferItem.expiryDate || grnLineItem?.expiryDate || null;
+    const manufacturingDate =
+      transferItem.manufacturingDate || grnLineItem?.manufacturingDate || null;
+
     // Find or create warehouse stock record and update atomically using $inc
     // Uses upsert to create if doesn't exist, or update if exists
     // Note: $inc on a non-existent field treats it as 0, so no need for quantity in $setOnInsert
@@ -321,13 +341,19 @@ transferSchema.methods._updateGRNToWarehouseStock = async function (
       {
         inventoryId: transferItem.inventoryId,
         warehouseId: this.destinationWarehouseId,
+        batchNumber: batchNumber,
       },
       {
         $inc: { quantity: transferItem.quantity },
-        $set: { lastUpdated: new Date() },
+        $set: {
+          lastUpdated: new Date(),
+        },
         $setOnInsert: {
           inventoryId: transferItem.inventoryId,
           warehouseId: this.destinationWarehouseId,
+          batchNumber: batchNumber,
+          expiryDate: expiryDate,
+          manufacturingDate: manufacturingDate,
           // quantity is handled by $inc - if document doesn't exist, $inc creates it with transferItem.quantity
         },
       },
@@ -417,6 +443,13 @@ transferSchema.methods._updateGRNToStorefrontStock = async function (
       );
     }
 
+    const batchNumber =
+      transferItem.batchNumber || grnLineItem?.batchNumber || "__LEGACY__";
+    const expiryDate =
+      transferItem.expiryDate || grnLineItem?.expiryDate || null;
+    const manufacturingDate =
+      transferItem.manufacturingDate || grnLineItem?.manufacturingDate || null;
+
     // Find or create storefront inventory record and update atomically using $inc
     // Uses upsert to create if doesn't exist, or update if exists
     // Note: $inc on a non-existent field treats it as 0, so no need for quantity in $setOnInsert
@@ -424,13 +457,19 @@ transferSchema.methods._updateGRNToStorefrontStock = async function (
       {
         inventoryId: transferItem.inventoryId,
         storefrontId: this.destinationStorefrontId,
+        batchNumber: batchNumber,
       },
       {
         $inc: { quantity: transferItem.quantity },
-        $set: { lastUpdated: new Date() },
+        $set: {
+          lastUpdated: new Date(),
+        },
         $setOnInsert: {
           inventoryId: transferItem.inventoryId,
           storefrontId: this.destinationStorefrontId,
+          batchNumber: batchNumber,
+          expiryDate: expiryDate,
+          manufacturingDate: manufacturingDate,
           // quantity is handled by $inc - if document doesn't exist, $inc creates it with transferItem.quantity
         },
       },
@@ -466,22 +505,25 @@ transferSchema.methods._updateWarehouseToStorefrontStock = async function (
   for (const transferItem of this.lineItems) {
     if (transferItem.quantity <= 0) continue;
 
+    const batchNumber = transferItem.batchNumber || "__LEGACY__";
+
     // Validate warehouse has sufficient stock
     const warehouseStock = await WarehouseStock.findOne({
       inventoryId: transferItem.inventoryId,
       warehouseId: this.sourceId,
+      batchNumber: batchNumber,
     }).session(session || null);
 
     if (!warehouseStock) {
       throw new Error(
-        `Warehouse stock not found for inventory ${transferItem.inventoryId} in warehouse ${this.sourceId}`
+        `Warehouse stock not found for inventory ${transferItem.inventoryId} (batch: ${batchNumber}) in warehouse ${this.sourceId}`
       );
     }
 
     const availableQty = warehouseStock.quantity || 0;
     if (transferItem.quantity > availableQty) {
       throw new Error(
-        `Transfer quantity (${transferItem.quantity}) exceeds available warehouse stock (${availableQty}) for inventory ${transferItem.inventoryId}`
+        `Transfer quantity (${transferItem.quantity}) exceeds available warehouse stock (${availableQty}) for inventory ${transferItem.inventoryId} (batch: ${batchNumber})`
       );
     }
 
@@ -490,6 +532,7 @@ transferSchema.methods._updateWarehouseToStorefrontStock = async function (
       {
         inventoryId: transferItem.inventoryId,
         warehouseId: this.sourceId,
+        batchNumber: batchNumber,
       },
       {
         $inc: { quantity: -transferItem.quantity }, // Negative to deduct
@@ -502,18 +545,29 @@ transferSchema.methods._updateWarehouseToStorefrontStock = async function (
       }
     );
 
+    const expiryDate =
+      transferItem.expiryDate || warehouseStock.expiryDate || null;
+    const manufacturingDate =
+      transferItem.manufacturingDate || warehouseStock.manufacturingDate || null;
+
     // Add to storefront inventory atomically using $inc
     await StorefrontInventory.findOneAndUpdate(
       {
         inventoryId: transferItem.inventoryId,
         storefrontId: this.destinationStorefrontId,
+        batchNumber: batchNumber,
       },
       {
         $inc: { quantity: transferItem.quantity },
-        $set: { lastUpdated: new Date() },
+        $set: {
+          lastUpdated: new Date(),
+        },
         $setOnInsert: {
           inventoryId: transferItem.inventoryId,
           storefrontId: this.destinationStorefrontId,
+          batchNumber: batchNumber,
+          expiryDate: expiryDate,
+          manufacturingDate: manufacturingDate,
           // quantity is handled by $inc - if document doesn't exist, $inc creates it with transferItem.quantity
         },
       },
