@@ -1,6 +1,8 @@
 import express from "express";
 import {
   createTransfer,
+  transferWarehouseToWarehouse,
+  transferStorefrontToWarehouse,
   getTransfers,
   getTransferById,
   updateTransferStatus,
@@ -21,6 +23,18 @@ router.get(
   protect,
   permissionGranted("owner", "admin"),
   getTransfers
+);
+router.post(
+  "/transfer/warehouse-to-warehouse",
+  protect,
+  permissionGranted("owner", "admin"),
+  transferWarehouseToWarehouse
+);
+router.post(
+  "/transfer/storefront-to-warehouse",
+  protect,
+  permissionGranted("owner", "admin"),
+  transferStorefrontToWarehouse
 );
 router.get(
   "/transfer/:id",

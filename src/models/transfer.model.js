@@ -60,8 +60,8 @@ const transferSchema = new mongoose.Schema(
     sourceType: {
       type: String,
       enum: {
-        values: ["GRN", "Warehouse"],
-        message: "Source type must be GRN or Warehouse",
+        values: ["GRN", "Warehouse", "Storefront"],
+        message: "Source type must be GRN, Warehouse, or Storefront",
       },
       required: [true, "Source type is required"],
     },
@@ -71,6 +71,7 @@ const transferSchema = new mongoose.Schema(
       // Dynamic reference based on sourceType
       // If sourceType is "GRN", this references GoodsRecievedNote
       // If sourceType is "Warehouse", this references LocationProfile (type: "warehouse")
+      // If sourceType is "Storefront", this references LocationProfile (type: "storefront")
     },
     destinationWarehouseId: {
       type: mongoose.Schema.Types.ObjectId,
@@ -156,9 +157,25 @@ transferSchema.pre("save", async function () {
       );
     }
   } else if (this.sourceType === "Warehouse") {
-    if (!this.destinationStorefrontId) {
+    if (!this.destinationStorefrontId && !this.destinationWarehouseId) {
       throw new Error(
-        "destinationStorefrontId is required when sourceType is 'Warehouse' (Warehouse → Storefront transfer)"
+        "Either destinationStorefrontId or destinationWarehouseId is required when sourceType is 'Warehouse'"
+      );
+    }
+    if (this.destinationStorefrontId && this.destinationWarehouseId) {
+      throw new Error(
+        "Cannot specify both destinationStorefrontId and destinationWarehouseId for Warehouse transfers"
+      );
+    }
+  } else if (this.sourceType === "Storefront") {
+    if (!this.destinationWarehouseId) {
+      throw new Error(
+        "destinationWarehouseId is required when sourceType is 'Storefront' (Storefront → Warehouse transfer)"
+      );
+    }
+    if (this.destinationStorefrontId) {
+      throw new Error(
+        "destinationStorefrontId should not be set for Storefront → Warehouse transfers"
       );
     }
   }
@@ -233,8 +250,14 @@ transferSchema.methods.updateStock = async function (session = null) {
     }
   }
 
-  if (this.sourceType === "Warehouse" && !this.destinationStorefrontId) {
-    throw new Error("Warehouse transfers require destinationStorefrontId");
+  if (
+    this.sourceType === "Warehouse" &&
+    !this.destinationStorefrontId &&
+    !this.destinationWarehouseId
+  ) {
+    throw new Error(
+      "Warehouse transfers require destinationStorefrontId or destinationWarehouseId"
+    );
   }
 
   // Handle GRN transfers (to Warehouse or Storefront)
@@ -245,9 +268,22 @@ transferSchema.methods.updateStock = async function (session = null) {
       await this._updateGRNToStorefrontStock(session);
     }
   }
-  // Handle Warehouse → Storefront transfers
+  // Handle Warehouse transfers (to Storefront or Warehouse)
   else if (this.sourceType === "Warehouse") {
-    await this._updateWarehouseToStorefrontStock(session);
+    if (this.destinationWarehouseId) {
+      await this._updateWarehouseToWarehouseStock(session);
+    } else if (this.destinationStorefrontId) {
+      await this._updateWarehouseToStorefrontStock(session);
+    }
+  }
+  // Handle Storefront → Warehouse transfers
+  else if (this.sourceType === "Storefront") {
+    if (!this.destinationWarehouseId) {
+      throw new Error(
+        "Storefront transfers require destinationWarehouseId"
+      );
+    }
+    await this._updateStorefrontToWarehouseStock(session);
   }
 };
 
@@ -565,6 +601,231 @@ transferSchema.methods._updateWarehouseToStorefrontStock = async function (
         $setOnInsert: {
           inventoryId: transferItem.inventoryId,
           storefrontId: this.destinationStorefrontId,
+          batchNumber: batchNumber,
+          expiryDate: expiryDate,
+          manufacturingDate: manufacturingDate,
+          // quantity is handled by $inc - if document doesn't exist, $inc creates it with transferItem.quantity
+        },
+      },
+      {
+        upsert: true,
+        session,
+        new: true,
+        runValidators: true,
+      }
+    );
+  }
+};
+
+// Private method: Handle Warehouse → Warehouse stock updates
+transferSchema.methods._updateWarehouseToWarehouseStock = async function (
+  session = null
+) {
+  const WarehouseStock = mongoose.model("WarehouseStock");
+  const LocationProfile = mongoose.model("LocationProfile");
+
+  // Validate source warehouse exists
+  const sourceWarehouse = await LocationProfile.findOne({
+    _id: this.sourceId,
+    type: "warehouse",
+  }).session(session || null);
+
+  if (!sourceWarehouse) {
+    throw new Error(`Source warehouse with ID ${this.sourceId} not found`);
+  }
+
+  // Validate destination warehouse exists
+  const destinationWarehouse = await LocationProfile.findOne({
+    _id: this.destinationWarehouseId,
+    type: "warehouse",
+  }).session(session || null);
+
+  if (!destinationWarehouse) {
+    throw new Error(
+      `Destination warehouse with ID ${this.destinationWarehouseId} not found`
+    );
+  }
+
+  // Process each transfer line item
+  for (const transferItem of this.lineItems) {
+    if (transferItem.quantity <= 0) continue;
+
+    const batchNumber = transferItem.batchNumber || "__LEGACY__";
+
+    // Validate warehouse has sufficient stock
+    const warehouseStock = await WarehouseStock.findOne({
+      inventoryId: transferItem.inventoryId,
+      warehouseId: this.sourceId,
+      batchNumber: batchNumber,
+    }).session(session || null);
+
+    if (!warehouseStock) {
+      throw new Error(
+        `Warehouse stock not found for inventory ${transferItem.inventoryId} (batch: ${batchNumber}) in source warehouse ${this.sourceId}`
+      );
+    }
+
+    const availableQty = warehouseStock.quantity || 0;
+    if (transferItem.quantity > availableQty) {
+      throw new Error(
+        `Transfer quantity (${transferItem.quantity}) exceeds available warehouse stock (${availableQty}) for inventory ${transferItem.inventoryId} (batch: ${batchNumber})`
+      );
+    }
+
+    // Deduct from source warehouse stock atomically using $inc
+    await WarehouseStock.findOneAndUpdate(
+      {
+        inventoryId: transferItem.inventoryId,
+        warehouseId: this.sourceId,
+        batchNumber: batchNumber,
+      },
+      {
+        $inc: { quantity: -transferItem.quantity }, // Negative to deduct
+        $set: { lastUpdated: new Date() },
+      },
+      {
+        session,
+        new: true,
+        runValidators: true,
+      }
+    );
+
+    const expiryDate =
+      transferItem.expiryDate || warehouseStock.expiryDate || null;
+    const manufacturingDate =
+      transferItem.manufacturingDate ||
+      warehouseStock.manufacturingDate ||
+      null;
+
+    // Add to destination warehouse stock atomically using $inc with upsert
+    // Uses $setOnInsert for batch metadata fields to avoid $set vs $setOnInsert conflicts
+    await WarehouseStock.findOneAndUpdate(
+      {
+        inventoryId: transferItem.inventoryId,
+        warehouseId: this.destinationWarehouseId,
+        batchNumber: batchNumber,
+      },
+      {
+        $inc: { quantity: transferItem.quantity },
+        $set: {
+          lastUpdated: new Date(),
+        },
+        $setOnInsert: {
+          inventoryId: transferItem.inventoryId,
+          warehouseId: this.destinationWarehouseId,
+          batchNumber: batchNumber,
+          expiryDate: expiryDate,
+          manufacturingDate: manufacturingDate,
+          // quantity is handled by $inc - if document doesn't exist, $inc creates it with transferItem.quantity
+        },
+      },
+      {
+        upsert: true,
+        session,
+        new: true,
+        runValidators: true,
+      }
+    );
+  }
+};
+
+// Private method: Handle Storefront → Warehouse stock updates
+transferSchema.methods._updateStorefrontToWarehouseStock = async function (
+  session = null
+) {
+  const WarehouseStock = mongoose.model("WarehouseStock");
+  const StorefrontInventory = mongoose.model("StorefrontInventory");
+  const LocationProfile = mongoose.model("LocationProfile");
+
+  // Validate source storefront exists
+  const sourceStorefront = await LocationProfile.findOne({
+    _id: this.sourceId,
+    type: "storefront",
+  }).session(session || null);
+
+  if (!sourceStorefront) {
+    throw new Error(`Source storefront with ID ${this.sourceId} not found`);
+  }
+
+  // Validate destination warehouse exists
+  const destinationWarehouse = await LocationProfile.findOne({
+    _id: this.destinationWarehouseId,
+    type: "warehouse",
+  }).session(session || null);
+
+  if (!destinationWarehouse) {
+    throw new Error(
+      `Destination warehouse with ID ${this.destinationWarehouseId} not found`
+    );
+  }
+
+  // Process each transfer line item
+  for (const transferItem of this.lineItems) {
+    if (transferItem.quantity <= 0) continue;
+
+    const batchNumber = transferItem.batchNumber || "__LEGACY__";
+
+    // Validate storefront has sufficient stock
+    const storefrontStock = await StorefrontInventory.findOne({
+      inventoryId: transferItem.inventoryId,
+      storefrontId: this.sourceId,
+      batchNumber: batchNumber,
+    }).session(session || null);
+
+    if (!storefrontStock) {
+      throw new Error(
+        `Storefront stock not found for inventory ${transferItem.inventoryId} (batch: ${batchNumber}) in storefront ${this.sourceId}`
+      );
+    }
+
+    const availableQty = storefrontStock.quantity || 0;
+    if (transferItem.quantity > availableQty) {
+      throw new Error(
+        `Transfer quantity (${transferItem.quantity}) exceeds available storefront stock (${availableQty}) for inventory ${transferItem.inventoryId} (batch: ${batchNumber})`
+      );
+    }
+
+    // Deduct from storefront stock atomically using $inc
+    await StorefrontInventory.findOneAndUpdate(
+      {
+        inventoryId: transferItem.inventoryId,
+        storefrontId: this.sourceId,
+        batchNumber: batchNumber,
+      },
+      {
+        $inc: { quantity: -transferItem.quantity }, // Negative to deduct
+        $set: { lastUpdated: new Date() },
+      },
+      {
+        session,
+        new: true,
+        runValidators: true,
+      }
+    );
+
+    const expiryDate =
+      transferItem.expiryDate || storefrontStock.expiryDate || null;
+    const manufacturingDate =
+      transferItem.manufacturingDate ||
+      storefrontStock.manufacturingDate ||
+      null;
+
+    // Add to destination warehouse stock atomically using $inc with upsert
+    // Uses $setOnInsert for batch metadata fields to avoid $set vs $setOnInsert conflicts
+    await WarehouseStock.findOneAndUpdate(
+      {
+        inventoryId: transferItem.inventoryId,
+        warehouseId: this.destinationWarehouseId,
+        batchNumber: batchNumber,
+      },
+      {
+        $inc: { quantity: transferItem.quantity },
+        $set: {
+          lastUpdated: new Date(),
+        },
+        $setOnInsert: {
+          inventoryId: transferItem.inventoryId,
+          warehouseId: this.destinationWarehouseId,
           batchNumber: batchNumber,
           expiryDate: expiryDate,
           manufacturingDate: manufacturingDate,
