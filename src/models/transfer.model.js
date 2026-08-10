@@ -168,14 +168,14 @@ transferSchema.pre("save", async function () {
       );
     }
   } else if (this.sourceType === "Storefront") {
-    if (!this.destinationWarehouseId) {
+    if (!this.destinationWarehouseId && !this.destinationStorefrontId) {
       throw new Error(
-        "destinationWarehouseId is required when sourceType is 'Storefront' (Storefront → Warehouse transfer)"
+        "Either destinationWarehouseId or destinationStorefrontId is required when sourceType is 'Storefront'"
       );
     }
-    if (this.destinationStorefrontId) {
+    if (this.destinationWarehouseId && this.destinationStorefrontId) {
       throw new Error(
-        "destinationStorefrontId should not be set for Storefront → Warehouse transfers"
+        "Cannot specify both destinationWarehouseId and destinationStorefrontId for Storefront transfers"
       );
     }
   }
@@ -276,14 +276,17 @@ transferSchema.methods.updateStock = async function (session = null) {
       await this._updateWarehouseToStorefrontStock(session);
     }
   }
-  // Handle Storefront → Warehouse transfers
+  // Handle Storefront transfers (to Warehouse or Storefront)
   else if (this.sourceType === "Storefront") {
-    if (!this.destinationWarehouseId) {
+    if (this.destinationWarehouseId) {
+      await this._updateStorefrontToWarehouseStock(session);
+    } else if (this.destinationStorefrontId) {
+      await this._updateStorefrontToStorefrontStock(session);
+    } else {
       throw new Error(
-        "Storefront transfers require destinationWarehouseId"
+        "Storefront transfers require destinationWarehouseId or destinationStorefrontId"
       );
     }
-    await this._updateStorefrontToWarehouseStock(session);
   }
 };
 
@@ -826,6 +829,118 @@ transferSchema.methods._updateStorefrontToWarehouseStock = async function (
         $setOnInsert: {
           inventoryId: transferItem.inventoryId,
           warehouseId: this.destinationWarehouseId,
+          batchNumber: batchNumber,
+          expiryDate: expiryDate,
+          manufacturingDate: manufacturingDate,
+          // quantity is handled by $inc - if document doesn't exist, $inc creates it with transferItem.quantity
+        },
+      },
+      {
+        upsert: true,
+        session,
+        new: true,
+        runValidators: true,
+      }
+    );
+  }
+};
+
+// Private method: Handle Storefront → Storefront stock updates
+transferSchema.methods._updateStorefrontToStorefrontStock = async function (
+  session = null
+) {
+  const StorefrontInventory = mongoose.model("StorefrontInventory");
+  const LocationProfile = mongoose.model("LocationProfile");
+
+  // Validate source storefront exists
+  const sourceStorefront = await LocationProfile.findOne({
+    _id: this.sourceId,
+    type: "storefront",
+  }).session(session || null);
+
+  if (!sourceStorefront) {
+    throw new Error(`Source storefront with ID ${this.sourceId} not found`);
+  }
+
+  // Validate destination storefront exists
+  const destinationStorefront = await LocationProfile.findOne({
+    _id: this.destinationStorefrontId,
+    type: "storefront",
+  }).session(session || null);
+
+  if (!destinationStorefront) {
+    throw new Error(
+      `Destination storefront with ID ${this.destinationStorefrontId} not found`
+    );
+  }
+
+  // Process each transfer line item
+  for (const transferItem of this.lineItems) {
+    if (transferItem.quantity <= 0) continue;
+
+    const batchNumber = transferItem.batchNumber || "__LEGACY__";
+
+    // Validate source storefront has sufficient stock
+    const storefrontStock = await StorefrontInventory.findOne({
+      inventoryId: transferItem.inventoryId,
+      storefrontId: this.sourceId,
+      batchNumber: batchNumber,
+    }).session(session || null);
+
+    if (!storefrontStock) {
+      throw new Error(
+        `Storefront stock not found for inventory ${transferItem.inventoryId} (batch: ${batchNumber}) in source storefront ${this.sourceId}`
+      );
+    }
+
+    const availableQty = storefrontStock.quantity || 0;
+    if (transferItem.quantity > availableQty) {
+      throw new Error(
+        `Transfer quantity (${transferItem.quantity}) exceeds available storefront stock (${availableQty}) for inventory ${transferItem.inventoryId} (batch: ${batchNumber})`
+      );
+    }
+
+    // Deduct from source storefront stock atomically using $inc
+    await StorefrontInventory.findOneAndUpdate(
+      {
+        inventoryId: transferItem.inventoryId,
+        storefrontId: this.sourceId,
+        batchNumber: batchNumber,
+      },
+      {
+        $inc: { quantity: -transferItem.quantity }, // Negative to deduct
+        $set: { lastUpdated: new Date() },
+      },
+      {
+        session,
+        new: true,
+        runValidators: true,
+      }
+    );
+
+    const expiryDate =
+      transferItem.expiryDate || storefrontStock.expiryDate || null;
+    const manufacturingDate =
+      transferItem.manufacturingDate ||
+      storefrontStock.manufacturingDate ||
+      null;
+
+    // Add to destination storefront stock atomically using $inc with upsert
+    // Uses $setOnInsert for batch metadata fields to avoid $set vs $setOnInsert conflicts
+    await StorefrontInventory.findOneAndUpdate(
+      {
+        inventoryId: transferItem.inventoryId,
+        storefrontId: this.destinationStorefrontId,
+        batchNumber: batchNumber,
+      },
+      {
+        $inc: { quantity: transferItem.quantity },
+        $set: {
+          lastUpdated: new Date(),
+        },
+        $setOnInsert: {
+          inventoryId: transferItem.inventoryId,
+          storefrontId: this.destinationStorefrontId,
           batchNumber: batchNumber,
           expiryDate: expiryDate,
           manufacturingDate: manufacturingDate,

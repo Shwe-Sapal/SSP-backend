@@ -1084,6 +1084,542 @@ export const transferStorefrontToWarehouse = asyncErrorHandler(
   }
 );
 
+// Warehouse → Storefront Transfer with Batch Tracking
+export const transferWarehouseToStorefront = asyncErrorHandler(
+  async (req, res, next) => {
+    // Authentication check
+    if (!req.user || !req.user._id) {
+      return next(
+        new CustomError(
+          401,
+          "Authentication required. Admin account ID is missing."
+        )
+      );
+    }
+    const transferredBy = req.user._id;
+
+    const {
+      fromLocationId,
+      toLocationId,
+      lineItems,
+      lineitems,
+      transferDate,
+      notes,
+    } = req.body;
+
+    // Support both camelCase and lowercase for lineItems
+    const transferLineItems = lineItems || lineitems;
+
+    // Validate required fields
+    if (!fromLocationId) {
+      return next(new CustomError(400, "fromLocationId is required"));
+    }
+    if (!mongoose.Types.ObjectId.isValid(fromLocationId)) {
+      return next(new CustomError(400, "Invalid fromLocationId format"));
+    }
+    if (!toLocationId) {
+      return next(new CustomError(400, "toLocationId is required"));
+    }
+    if (!mongoose.Types.ObjectId.isValid(toLocationId)) {
+      return next(new CustomError(400, "Invalid toLocationId format"));
+    }
+
+    // Validate lineItems array
+    if (
+      !transferLineItems ||
+      !Array.isArray(transferLineItems) ||
+      transferLineItems.length === 0
+    ) {
+      return next(
+        new CustomError(
+          400,
+          "Line items are required and must be a non-empty array"
+        )
+      );
+    }
+
+    // batchNumber is strictly required for every item
+    for (let i = 0; i < transferLineItems.length; i++) {
+      if (
+        !transferLineItems[i].batchNumber ||
+        typeof transferLineItems[i].batchNumber !== "string" ||
+        transferLineItems[i].batchNumber.trim() === ""
+      ) {
+        return next(
+          new CustomError(
+            400,
+            `batchNumber is required for every line item. Missing or empty batchNumber at item index ${i}.`
+          )
+        );
+      }
+    }
+
+    // Validate source warehouse exists
+    const sourceWarehouse = await LocationProfile.findOne({
+      _id: fromLocationId,
+      type: "warehouse",
+    });
+    if (!sourceWarehouse) {
+      return next(new CustomError(404, "Source warehouse not found"));
+    }
+    if (sourceWarehouse.isDeleted) {
+      return next(
+        new CustomError(400, "Cannot transfer from a deleted warehouse")
+      );
+    }
+
+    // Validate destination storefront exists
+    const destinationStorefront = await LocationProfile.findOne({
+      _id: toLocationId,
+      type: "storefront",
+    });
+    if (!destinationStorefront) {
+      return next(new CustomError(404, "Destination storefront not found"));
+    }
+    if (destinationStorefront.isDeleted) {
+      return next(
+        new CustomError(400, "Cannot transfer to a deleted storefront")
+      );
+    }
+
+    // Validate and process line items
+    const validatedLineItems = [];
+
+    for (const userItem of transferLineItems) {
+      // Validate required fields
+      if (!userItem.productCode) {
+        return next(
+          new CustomError(400, "Each line item must have productCode")
+        );
+      }
+
+      // Support both 'quantity' and 'transferQuantity' field names
+      const qty =
+        userItem.transferQuantity !== undefined
+          ? userItem.transferQuantity
+          : userItem.quantity;
+
+      if (qty === undefined || qty === null) {
+        return next(
+          new CustomError(
+            400,
+            "Transfer quantity (quantity or transferQuantity) is required for all line items"
+          )
+        );
+      }
+
+      if (typeof qty !== "number" || qty <= 0) {
+        return next(
+          new CustomError(
+            400,
+            "Transfer quantity must be a positive number greater than 0"
+          )
+        );
+      }
+
+      // Lookup inventory by productCode
+      const inventory = await Inventory.findOne({
+        productCode: userItem.productCode.toUpperCase(),
+      }).lean();
+
+      if (!inventory) {
+        return next(
+          new CustomError(
+            404,
+            `Product with code '${userItem.productCode}' not found`
+          )
+        );
+      }
+
+      const inventoryIdValue = userItem.inventoryId || inventory._id;
+      const batchNumber = userItem.batchNumber.trim();
+
+      // Validate source warehouse has sufficient stock for this batch
+      const warehouseStock = await WarehouseStock.findOne({
+        inventoryId: inventoryIdValue,
+        warehouseId: fromLocationId,
+        batchNumber,
+      }).lean();
+
+      if (!warehouseStock) {
+        return next(
+          new CustomError(
+            400,
+            `Insufficient stock: No stock record found for product '${userItem.productCode}' with batch '${batchNumber}' in source warehouse`
+          )
+        );
+      }
+
+      const availableQuantity = warehouseStock.quantity || 0;
+      if (qty > availableQuantity) {
+        return next(
+          new CustomError(
+            400,
+            `Insufficient stock for product '${userItem.productCode}' (batch: ${batchNumber}). Requested: ${qty}, Available: ${availableQuantity}`
+          )
+        );
+      }
+
+      const expiryDate = userItem.expiryDate
+        ? new Date(userItem.expiryDate)
+        : warehouseStock.expiryDate || null;
+      const manufacturingDate = userItem.manufacturingDate
+        ? new Date(userItem.manufacturingDate)
+        : warehouseStock.manufacturingDate || null;
+
+      // Build validated line item
+      validatedLineItems.push({
+        inventoryId: inventoryIdValue,
+        batchNumber,
+        expiryDate,
+        manufacturingDate,
+        quantity: qty,
+        notes: userItem.notes || null,
+      });
+    }
+
+    // Auto-generate transfer number
+    const transferNumber = await Transfer.generateTransferNumber();
+
+    // Use MongoDB transaction to ensure ACID properties
+    const session = await mongoose.startSession();
+    session.startTransaction();
+
+    try {
+      // Create transfer document
+      const transferData = {
+        transferNumber,
+        sourceType: "Warehouse",
+        sourceId: fromLocationId,
+        destinationStorefrontId: toLocationId,
+        lineItems: validatedLineItems,
+        transferDate: transferDate || new Date(),
+        notes: notes || null,
+        status: "completed",
+        transferredBy,
+      };
+
+      // Create transfer document within transaction
+      const newTransferArray = await Transfer.create([transferData], {
+        session,
+      });
+      const transfer = newTransferArray[0];
+
+      // Deduct from source warehouse, add to destination storefront (handled by model method)
+      await transfer.updateStock(session);
+
+      // Set receivedDate since transfer is completed
+      transfer.receivedDate = new Date();
+      await transfer.save({ session });
+
+      // Commit transaction - all operations succeed or all fail
+      await session.commitTransaction();
+      await session.endSession();
+
+      // Populate references for response
+      await transfer.populate("sourceId", "locationName locationCode");
+      await transfer.populate(
+        "destinationStorefrontId",
+        "locationName locationCode"
+      );
+      await transfer.populate(
+        "lineItems.inventoryId",
+        "productName productCode SKU"
+      );
+      await transfer.populate("transferredBy", "name role");
+
+      res.status(201).json({
+        success: true,
+        message:
+          "Warehouse-to-storefront transfer created and stock transferred successfully",
+        data: transfer,
+      });
+    } catch (error) {
+      // Rollback transaction on any error
+      await session.abortTransaction();
+      await session.endSession();
+      return next(
+        new CustomError(
+          500,
+          `Failed to create warehouse-to-storefront transfer: ${error.message}`
+        )
+      );
+    }
+  }
+);
+
+// Storefront → Storefront Transfer with Batch Tracking
+export const transferStorefrontToStorefront = asyncErrorHandler(
+  async (req, res, next) => {
+    // Authentication check
+    if (!req.user || !req.user._id) {
+      return next(
+        new CustomError(
+          401,
+          "Authentication required. Admin account ID is missing."
+        )
+      );
+    }
+    const transferredBy = req.user._id;
+
+    const {
+      fromLocationId,
+      toLocationId,
+      lineItems,
+      lineitems,
+      transferDate,
+      notes,
+    } = req.body;
+
+    // Support both camelCase and lowercase for lineItems
+    const transferLineItems = lineItems || lineitems;
+
+    // Validate required fields
+    if (!fromLocationId) {
+      return next(new CustomError(400, "fromLocationId is required"));
+    }
+    if (!mongoose.Types.ObjectId.isValid(fromLocationId)) {
+      return next(new CustomError(400, "Invalid fromLocationId format"));
+    }
+    if (!toLocationId) {
+      return next(new CustomError(400, "toLocationId is required"));
+    }
+    if (!mongoose.Types.ObjectId.isValid(toLocationId)) {
+      return next(new CustomError(400, "Invalid toLocationId format"));
+    }
+    if (fromLocationId === toLocationId) {
+      return next(
+        new CustomError(
+          400,
+          "Source and destination storefronts must be different"
+        )
+      );
+    }
+
+    // Validate lineItems array
+    if (
+      !transferLineItems ||
+      !Array.isArray(transferLineItems) ||
+      transferLineItems.length === 0
+    ) {
+      return next(
+        new CustomError(
+          400,
+          "Line items are required and must be a non-empty array"
+        )
+      );
+    }
+
+    // batchNumber is strictly required for every item
+    for (let i = 0; i < transferLineItems.length; i++) {
+      if (
+        !transferLineItems[i].batchNumber ||
+        typeof transferLineItems[i].batchNumber !== "string" ||
+        transferLineItems[i].batchNumber.trim() === ""
+      ) {
+        return next(
+          new CustomError(
+            400,
+            `batchNumber is required for every line item. Missing or empty batchNumber at item index ${i}.`
+          )
+        );
+      }
+    }
+
+    // Validate source storefront exists
+    const sourceStorefront = await LocationProfile.findOne({
+      _id: fromLocationId,
+      type: "storefront",
+    });
+    if (!sourceStorefront) {
+      return next(new CustomError(404, "Source storefront not found"));
+    }
+    if (sourceStorefront.isDeleted) {
+      return next(
+        new CustomError(400, "Cannot transfer from a deleted storefront")
+      );
+    }
+
+    // Validate destination storefront exists
+    const destinationStorefront = await LocationProfile.findOne({
+      _id: toLocationId,
+      type: "storefront",
+    });
+    if (!destinationStorefront) {
+      return next(new CustomError(404, "Destination storefront not found"));
+    }
+    if (destinationStorefront.isDeleted) {
+      return next(
+        new CustomError(400, "Cannot transfer to a deleted storefront")
+      );
+    }
+
+    // Validate and process line items
+    const validatedLineItems = [];
+
+    for (const userItem of transferLineItems) {
+      // Validate required fields
+      if (!userItem.productCode) {
+        return next(
+          new CustomError(400, "Each line item must have productCode")
+        );
+      }
+
+      // Support both 'quantity' and 'transferQuantity' field names
+      const qty =
+        userItem.transferQuantity !== undefined
+          ? userItem.transferQuantity
+          : userItem.quantity;
+
+      if (qty === undefined || qty === null) {
+        return next(
+          new CustomError(
+            400,
+            "Transfer quantity (quantity or transferQuantity) is required for all line items"
+          )
+        );
+      }
+
+      if (typeof qty !== "number" || qty <= 0) {
+        return next(
+          new CustomError(
+            400,
+            "Transfer quantity must be a positive number greater than 0"
+          )
+        );
+      }
+
+      // Lookup inventory by productCode
+      const inventory = await Inventory.findOne({
+        productCode: userItem.productCode.toUpperCase(),
+      }).lean();
+
+      if (!inventory) {
+        return next(
+          new CustomError(
+            404,
+            `Product with code '${userItem.productCode}' not found`
+          )
+        );
+      }
+
+      const inventoryIdValue = userItem.inventoryId || inventory._id;
+      const batchNumber = userItem.batchNumber.trim();
+
+      // Validate source storefront has sufficient stock for this batch
+      const storefrontStock = await StorefrontInventory.findOne({
+        inventoryId: inventoryIdValue,
+        storefrontId: fromLocationId,
+        batchNumber,
+      }).lean();
+
+      if (!storefrontStock) {
+        return next(
+          new CustomError(
+            400,
+            `Insufficient stock: No stock record found for product '${userItem.productCode}' with batch '${batchNumber}' in source storefront`
+          )
+        );
+      }
+
+      const availableQuantity = storefrontStock.quantity || 0;
+      if (qty > availableQuantity) {
+        return next(
+          new CustomError(
+            400,
+            `Insufficient stock for product '${userItem.productCode}' (batch: ${batchNumber}). Requested: ${qty}, Available: ${availableQuantity}`
+          )
+        );
+      }
+
+      const expiryDate = userItem.expiryDate
+        ? new Date(userItem.expiryDate)
+        : storefrontStock.expiryDate || null;
+      const manufacturingDate = userItem.manufacturingDate
+        ? new Date(userItem.manufacturingDate)
+        : storefrontStock.manufacturingDate || null;
+
+      // Build validated line item
+      validatedLineItems.push({
+        inventoryId: inventoryIdValue,
+        batchNumber,
+        expiryDate,
+        manufacturingDate,
+        quantity: qty,
+        notes: userItem.notes || null,
+      });
+    }
+
+    // Auto-generate transfer number
+    const transferNumber = await Transfer.generateTransferNumber();
+
+    // Use MongoDB transaction to ensure ACID properties
+    const session = await mongoose.startSession();
+    session.startTransaction();
+
+    try {
+      // Create transfer document
+      const transferData = {
+        transferNumber,
+        sourceType: "Storefront",
+        sourceId: fromLocationId,
+        destinationStorefrontId: toLocationId,
+        lineItems: validatedLineItems,
+        transferDate: transferDate || new Date(),
+        notes: notes || null,
+        status: "completed",
+        transferredBy,
+      };
+
+      // Create transfer document within transaction
+      const newTransferArray = await Transfer.create([transferData], {
+        session,
+      });
+      const transfer = newTransferArray[0];
+
+      // Deduct from source storefront, add to destination storefront (handled by model method)
+      await transfer.updateStock(session);
+
+      // Set receivedDate since transfer is completed
+      transfer.receivedDate = new Date();
+      await transfer.save({ session });
+
+      // Commit transaction - all operations succeed or all fail
+      await session.commitTransaction();
+      await session.endSession();
+
+      // Populate references for response
+      await transfer.populate("sourceId", "locationName locationCode");
+      await transfer.populate(
+        "destinationStorefrontId",
+        "locationName locationCode"
+      );
+      await transfer.populate(
+        "lineItems.inventoryId",
+        "productName productCode SKU"
+      );
+      await transfer.populate("transferredBy", "name role");
+
+      res.status(201).json({
+        success: true,
+        message:
+          "Storefront-to-storefront transfer created and stock transferred successfully",
+        data: transfer,
+      });
+    } catch (error) {
+      // Rollback transaction on any error
+      await session.abortTransaction();
+      await session.endSession();
+      return next(
+        new CustomError(
+          500,
+          `Failed to create storefront-to-storefront transfer: ${error.message}`
+        )
+      );
+    }
+  }
+);
+
 export const getTransfers = asyncErrorHandler(async (req, res, next) => {
   const transfers = await Transfer.find()
     .populate("transferredBy", "name role")

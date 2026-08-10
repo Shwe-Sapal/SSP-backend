@@ -3,6 +3,8 @@ import {
   createTransfer,
   transferWarehouseToWarehouse,
   transferStorefrontToWarehouse,
+  transferWarehouseToStorefront,
+  transferStorefrontToStorefront,
   getTransfers,
   getTransferById,
   updateTransferStatus,
@@ -35,6 +37,18 @@ router.post(
   protect,
   permissionGranted("owner", "admin"),
   transferStorefrontToWarehouse
+);
+router.post(
+  "/transfer/warehouse-to-storefront",
+  protect,
+  permissionGranted("owner", "admin"),
+  transferWarehouseToStorefront
+);
+router.post(
+  "/transfer/storefront-to-storefront",
+  protect,
+  permissionGranted("owner", "admin"),
+  transferStorefrontToStorefront
 );
 router.get(
   "/transfer/:id",
