@@ -276,6 +276,20 @@ export const getAllWarehouseStock = asyncErrorHandler(
       });
     }
 
+    // Group by product and sum total quantity
+    pipeline.push({
+      $group: {
+        _id: "$inventoryId._id", 
+        inventoryId: { $first: "$inventoryId" }, 
+        warehouseId: { $first: "$warehouseId" }, 
+        quantity: { $sum: "$quantity" }, 
+        isLowStock: { $first: "$isLowStock" },
+        lastUpdated: { $max: "$lastUpdated" }, 
+        createdAt: { $first: "$createdAt" },
+        updatedAt: { $max: "$updatedAt" }
+      }
+    });
+
     // Build query chain using aggregate for status filtering and summary statistics
     const summaryPipeline = [
       ...pipeline,
