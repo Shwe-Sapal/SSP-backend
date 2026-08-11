@@ -187,6 +187,7 @@ export const getAllStorefrontInventory = asyncErrorHandler(
       isLowStock,
       search,
       category,
+      expiryDays,
       sortBy = "createdAt",
       sortOrder = "desc",
     } = req.query;
@@ -237,6 +238,26 @@ export const getAllStorefrontInventory = asyncErrorHandler(
 
     if (category) {
       pipeline.push({ $match: { "inventoryId.category": category } });
+    }
+
+    // Expiry days filter: only include batches expiring within the given window
+    if (expiryDays) {
+      const days = parseInt(expiryDays);
+      if (!isNaN(days) && days > 0) {
+        const now = new Date();
+        const futureDate = new Date(
+          now.getTime() + days * 24 * 60 * 60 * 1000,
+        );
+        pipeline.push({
+          $match: {
+            expiryDate: {
+              $ne: null,
+              $gte: now,
+              $lte: futureDate,
+            },
+          },
+        });
+      }
     }
 
     pipeline.push(
