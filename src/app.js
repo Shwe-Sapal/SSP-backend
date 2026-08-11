@@ -36,6 +36,7 @@ import aiChatRouter from "./routes/aiChat.route.js";
 import shopSettingRouter from "./routes/shopSetting.route.js";
 import dailyReportRouter from "./routes/dailyReport.route.js";
 import luckyDrawRouter from "./routes/luckyDraw.route.js";
+import reportRouter from "./routes/report.route.js";
 const app = express();
 app.use(
   helmet({
@@ -76,6 +77,7 @@ app.use("/api/v1", aiChatRouter);
 app.use("/api/v1", shopSettingRouter);
 app.use("/api/v1", dailyReportRouter);
 app.use("/api/v1", luckyDrawRouter);
+app.use("/api/v1", reportRouter);
 //404-Error Handler
 app.all("/*any", (req, res, next) => {
   const err = new CustomError(
