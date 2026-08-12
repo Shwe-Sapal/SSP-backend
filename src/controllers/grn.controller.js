@@ -75,6 +75,57 @@ export const createGRN = asyncErrorHandler(async (req, res, next) => {
     );
   }
 
+  // Extract all valid batch numbers provided in the payload to check for uniqueness
+  const incomingBatches = lineItems
+    .map((item) =>
+      item.batchNumber !== undefined ? item.batchNumber : item.batchNo
+    )
+    .filter(
+      (batch) =>
+        batch !== undefined &&
+        String(batch).trim() !== "" &&
+        String(batch).trim() !== "__LEGACY__"
+    )
+    .map((batch) => String(batch).trim());
+
+  if (incomingBatches.length > 0) {
+    // Check for internal duplicates within the payload
+    const uniqueIncoming = new Set(incomingBatches);
+    if (uniqueIncoming.size !== incomingBatches.length) {
+      return next(
+        new CustomError(
+          400,
+          "Duplicate batch numbers detected in your request payload. Please ensure each line item has a unique batch number."
+        )
+      );
+    }
+
+    // Query DB to see if any of these batches already exist in GoodsRecievedNote
+    const existingGRN = await GoodsRecievedNote.findOne({
+      lineItems: {
+        $elemMatch: {
+          batchNumber: { $in: incomingBatches },
+        },
+      },
+    });
+
+    if (existingGRN) {
+      // Find exactly which batch caused the conflict for a clear error message
+      const conflictItem = existingGRN.lineItems.find((item) =>
+        incomingBatches.includes(item.batchNumber)
+      );
+      const conflictBatch = conflictItem
+        ? conflictItem.batchNumber
+        : incomingBatches[0];
+      return next(
+        new CustomError(
+          400,
+          `Duplicate batch number detected: ${conflictBatch}. Please use unique batch numbers.`
+        )
+      );
+    }
+  }
+
   // Create a map of user-provided line items by productCode for easy lookup
   const userLineItemsMap = new Map();
   lineItems.forEach((item, index) => {
@@ -654,6 +705,26 @@ export const updateGRNLineItems = asyncErrorHandler(async (req, res, next) => {
         ? updateItem.batchNumber
         : updateItem.batchNo;
     if (batch !== undefined) {
+      // Check uniqueness of batchNumber if it's being actively set to a real batch
+      if (batch !== "__LEGACY__" && batch.trim() !== "") {
+        const existingBatch = await GoodsRecievedNote.findOne({
+          lineItems: {
+            $elemMatch: {
+              batchNumber: batch,
+              _id: { $ne: updateItem.lineItemId },
+            },
+          },
+        });
+
+        if (existingBatch) {
+          return next(
+            new CustomError(
+              400,
+              "Batch number already exists. Please enter a unique batch number."
+            )
+          );
+        }
+      }
       lineItem.batchNumber = batch;
     }
 
