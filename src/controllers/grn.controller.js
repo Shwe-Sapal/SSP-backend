@@ -647,6 +647,33 @@ export const updateGRNLineItems = asyncErrorHandler(async (req, res, next) => {
     if (updateItem.notes !== undefined) {
       lineItem.notes = updateItem.notes || null;
     }
+
+    // Update batchNumber (supports both batchNumber and batchNo from frontend)
+    const batch =
+      updateItem.batchNumber !== undefined
+        ? updateItem.batchNumber
+        : updateItem.batchNo;
+    if (batch !== undefined) {
+      lineItem.batchNumber = batch;
+    }
+
+    // Update and validate expiryDate
+    if (updateItem.expiryDate !== undefined) {
+      if (updateItem.expiryDate) {
+        const parsedDate = new Date(updateItem.expiryDate);
+        if (isNaN(parsedDate.getTime())) {
+          return next(
+            new CustomError(
+              400,
+              `Invalid expiryDate format for line item ${updateItem.lineItemId}.`
+            )
+          );
+        }
+        lineItem.expiryDate = parsedDate;
+      } else {
+        lineItem.expiryDate = null;
+      }
+    }
   }
 
   // Recalculate totalAmount based on updated line items
