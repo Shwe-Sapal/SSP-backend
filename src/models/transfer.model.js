@@ -380,7 +380,6 @@ transferSchema.methods._updateGRNToWarehouseStock = async function (
       {
         inventoryId: transferItem.inventoryId,
         warehouseId: this.destinationWarehouseId,
-        batchNumber: batchNumber,
       },
       {
         $inc: { quantity: transferItem.quantity },
@@ -706,7 +705,6 @@ transferSchema.methods._updateWarehouseToWarehouseStock = async function (
       {
         inventoryId: transferItem.inventoryId,
         warehouseId: this.destinationWarehouseId,
-        batchNumber: batchNumber,
       },
       {
         $inc: { quantity: transferItem.quantity },
@@ -819,7 +817,6 @@ transferSchema.methods._updateStorefrontToWarehouseStock = async function (
       {
         inventoryId: transferItem.inventoryId,
         warehouseId: this.destinationWarehouseId,
-        batchNumber: batchNumber,
       },
       {
         $inc: { quantity: transferItem.quantity },

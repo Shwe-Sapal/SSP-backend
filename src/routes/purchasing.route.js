@@ -6,6 +6,7 @@ import {
   updatePurchaseStatus,
   softDeletePurchase,
   restorePurchase,
+  hardDeletePurchase,
 } from "../controllers/purchase.controller.js";
 import {
   createSupplierPayment,
@@ -55,6 +56,12 @@ router.patch(
   protect,
   permissionGranted("owner"),
   restorePurchase
+);
+router.delete(
+  "/purchase/:id",
+  protect,
+  permissionGranted("owner"),
+  hardDeletePurchase
 );
 
 // Supplier Payment Routes

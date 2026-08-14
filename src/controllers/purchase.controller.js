@@ -376,3 +376,28 @@ export const restorePurchase = asyncErrorHandler(async (req, res, next) => {
     data: purchase,
   });
 });
+
+export const hardDeletePurchase = asyncErrorHandler(async (req, res, next) => {
+  const { id } = req.params;
+
+  // Validate MongoDB ObjectId format
+  if (!mongoose.Types.ObjectId.isValid(id)) {
+    return next(new CustomError(400, "Invalid purchase order ID format"));
+  }
+
+  // Find the purchase order
+  const purchase = await Purchasing.findById(id);
+
+  if (!purchase) {
+    return next(new CustomError(404, "Purchase order not found"));
+  }
+
+  // Delete the document permanently
+  await purchase.deleteOne();
+
+  res.status(200).json({
+    success: true,
+    message: "Purchase order permanently deleted successfully",
+    data: null,
+  });
+});
