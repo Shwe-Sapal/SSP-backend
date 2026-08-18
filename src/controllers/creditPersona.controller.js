@@ -4,13 +4,13 @@ import CustomError from "../utils/customError.js";
 import mongoose from "mongoose";
 
 export const createCreditPerson = asyncErrorHandler(async (req, res, next) => {
-  const { name, phone, address } = req.body;
+  const { name, phone, address, township } = req.body;
 
   if (!name || !phone) {
     return next(new CustomError(400, "Name and phone are required"));
   }
 
-  const creditPerson = await CreditPerson.create({ name, phone, address });
+  const creditPerson = await CreditPerson.create({ name, phone, address, township });
   res.status(201).json({
     success: true,
     message: "Credit person created successfully",
@@ -39,13 +39,13 @@ export const getCreditPersonById = asyncErrorHandler(async (req, res, next) => {
 
 export const updateCreditPerson = asyncErrorHandler(async (req, res, next) => {
   const { id } = req.params;
-  const { name, phone, address } = req.body;
+  const { name, phone, address, township } = req.body;
   if (!mongoose.Types.ObjectId.isValid(id)) {
     return next(new CustomError(400, "Invalid credit person ID format"));
   }
   const creditPerson = await CreditPerson.findByIdAndUpdate(
     id,
-    { name, phone, address },
+    { name, phone, address, township },
     { new: true }
   );
   if (!creditPerson) {

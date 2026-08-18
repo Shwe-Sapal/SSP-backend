@@ -14,6 +14,10 @@ const creditPersonSchema = new mongoose.Schema(
       trim: true,
       default: null,
     },
+    township: {
+      type: String,
+      default: "",
+    },
     blacklist: {
       type: Boolean,
       default: false,
