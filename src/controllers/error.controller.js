@@ -88,6 +88,19 @@ export const globalErrorHandler = (error, req, res, next) => {
       transformedError = handleExpiredJWT(error);
     } else if (error.name === "JsonWebTokenError") {
       transformedError = handleJWTError(error);
+    } else if (
+      // Mongoose pre-save hook errors arrive as plain Error objects (no statusCode).
+      // Detect them by checking for common UOM / validation keywords so we can
+      // return a 400 instead of letting them fall through as a 500.
+      !error.statusCode &&
+      error.message &&
+      (error.message.includes("UOM") ||
+        error.message.includes("Duplicate") ||
+        error.message.includes("Circular") ||
+        error.message.includes("Conversion") ||
+        error.message.includes("cannot be the same"))
+    ) {
+      transformedError = new CustomError(400, error.message);
     } else if (!error.isOperational) {
       // If it's not a known error type and not operational, create a generic CustomError
       // This ensures we always have an operational error with proper structure

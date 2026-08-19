@@ -94,6 +94,37 @@ const inventorySchema = new mongoose.Schema(
       trim: true,
       default: "piece",
     },
+    // Array of sub-unit conversion definitions relative to the base unitOfMeasure.
+    // Each entry describes how a derived unit relates back to another unit via `factor`
+    // and optionally chains through `convertFrom`.
+    uomConversions: [
+      {
+        unit: {
+          type: String,
+          required: [true, "Conversion unit name is required"],
+          trim: true,
+        },
+        // Multiplier to convert FROM the `convertFrom` unit (or the base unit)
+        // into this unit.  e.g. 1 box = 12 pieces → factor = 12.
+        factor: {
+          type: Number,
+          required: [true, "Conversion factor is required"],
+          min: [0.001, "Conversion factor must be at least 0.001"],
+        },
+        // When true this unit is pre-selected in the selling UI.
+        isDefaultSellingUnit: {
+          type: Boolean,
+          default: false,
+        },
+        // The unit this conversion derives from.
+        // null / omitted means it converts directly from the base `unitOfMeasure`.
+        convertFrom: {
+          type: String,
+          default: null,
+          trim: true,
+        },
+      },
+    ],
     reorderPoint: {
       type: Number,
       min: [0, "Reorder point cannot be negative"],
@@ -190,6 +221,85 @@ inventorySchema.virtual("profitAmount").get(function () {
 //   }
 //   next();
 // });
+
+// ---------------------------------------------------------------------------
+// Pre-save hook – UOM conversion validations
+// Uses synchronous throw instead of the callback `next` pattern.
+// Modern Mongoose (5+) catches thrown errors and rejects the save promise.
+// ---------------------------------------------------------------------------
+inventorySchema.pre("save", function () {
+  const conversions = this.uomConversions;
+
+  // Nothing to validate when the array is empty or absent.
+  if (!conversions || conversions.length === 0) return;
+
+  const baseUnit = (this.unitOfMeasure || "").trim().toLowerCase();
+
+  // ------------------------------------------------------------------
+  // 1. Duplicate unit names check
+  //    Collect every unit name (lowercased) and reject duplicates.
+  // ------------------------------------------------------------------
+  const seen = new Set();
+  for (const conv of conversions) {
+    const name = (conv.unit || "").trim().toLowerCase();
+    if (!name) continue; // schema-level `required` will catch empty names
+    if (seen.has(name)) {
+      throw new Error(
+        `Duplicate UOM conversion unit detected: "${conv.unit}". Each conversion unit must be unique.`,
+      );
+    }
+    seen.add(name);
+  }
+
+  // ------------------------------------------------------------------
+  // 2. No sub-unit may share the same name as the base unit
+  // ------------------------------------------------------------------
+  if (baseUnit) {
+    for (const conv of conversions) {
+      if ((conv.unit || "").trim().toLowerCase() === baseUnit) {
+        throw new Error(
+          `UOM conversion unit "${conv.unit}" cannot be the same as the base unit of measure "${this.unitOfMeasure}".`,
+        );
+      }
+    }
+  }
+
+  // ------------------------------------------------------------------
+  // 3. Circular convertFrom chain detection
+  //    Build an adjacency map  unit → convertFrom  then walk each chain.
+  //    If we revisit a node we have a cycle.
+  // ------------------------------------------------------------------
+  const parentMap = new Map(); // unit (lower) → convertFrom (lower)
+  for (const conv of conversions) {
+    const name = (conv.unit || "").trim().toLowerCase();
+    // convertFrom of null / undefined / empty means "derives from base unit".
+    const parent = conv.convertFrom
+      ? conv.convertFrom.trim().toLowerCase()
+      : null;
+    parentMap.set(name, parent);
+  }
+
+  for (const [startUnit] of parentMap) {
+    const visited = new Set();
+    let current = startUnit;
+
+    while (current !== null) {
+      // If we've already visited this node in the current walk, it's a cycle.
+      if (visited.has(current)) {
+        throw new Error(
+          `Circular UOM conversion chain detected involving unit "${current}". ` +
+            "Conversion chains must not form loops.",
+        );
+      }
+      visited.add(current);
+
+      // Move to the parent. If `current` isn't in the map it either
+      // points to the base unit or an external unit – both are terminal.
+      if (!parentMap.has(current)) break;
+      current = parentMap.get(current);
+    }
+  }
+});
 
 const Inventory = mongoose.model("Inventory", inventorySchema);
 export default Inventory;
