@@ -6,48 +6,92 @@ import Inventory from "../models/inventory.model.js";
 import { createDateFilter } from "../utils/dateFilter.utils.js";
 
 export const createPurchase = asyncErrorHandler(async (req, res, next) => {
-  const { supplierId, products, note, totalAmount, paymentType, paidAmount, dueDate } = req.body;
+  const { supplierId, products, note, paymentType, paidAmount, dueDate } = req.body;
   const purchasedBy = req.user._id;
 
   if (!supplierId || !products || products.length === 0) {
     return next(new CustomError(400, "Supplier ID and products are required"));
   }
 
-  // Fetch product details for each product in the purchase
-  const productsWithDetails = await Promise.all(
-    products.map(async (item) => {
-      if (!item.inventoryId || !item.purchaseQuantity) {
-        throw new CustomError(
-          400,
-          `Product must have inventoryId and purchaseQuantity`
-        );
-      }
+  // Extract all inventory IDs for batch fetching
+  const inventoryIds = products.map((item) => {
+    if (!item.inventoryId || !item.purchaseQuantity) {
+      throw new CustomError(
+        400,
+        `Product must have inventoryId and purchaseQuantity`
+      );
+    }
+    return item.inventoryId;
+  });
 
-      const inventoryItem = await Inventory.findById(item.inventoryId);
-
-      if (!inventoryItem) {
-        throw new CustomError(
-          404,
-          `Product with ID ${item.inventoryId} not found`
-        );
-      }
-
-      return {
-        inventoryId: inventoryItem._id,
-        productName: inventoryItem.productName,
-        productCode: inventoryItem.productCode,
-        buyingPrice: inventoryItem.buyingPrice,
-        purchaseQuantity: item.purchaseQuantity,
-      };
-    })
+  // Batch fetch all inventory items
+  const inventoryItems = await Inventory.find({ _id: { $in: inventoryIds } }).lean();
+  const inventoryMap = new Map(
+    inventoryItems.map((item) => [item._id.toString(), item])
   );
+
+  let calculatedTotalAmount = 0;
+
+  // Process and validate products
+  const productsWithDetails = products.map((item) => {
+    const inventoryItem = inventoryMap.get(item.inventoryId.toString());
+
+    if (!inventoryItem) {
+      throw new CustomError(
+        404,
+        `Product with ID ${item.inventoryId} not found`
+      );
+    }
+
+    // UOM Validation
+    const purchaseUnit = item.purchaseUnit || inventoryItem.unitOfMeasure || inventoryItem.uom;
+    const baseUnit = (inventoryItem.unitOfMeasure || inventoryItem.uom || "").trim().toLowerCase();
+    
+    // Build set of valid units (base unit + conversion units)
+    const validUnits = new Set([baseUnit]);
+    if (inventoryItem.uomConversions && Array.isArray(inventoryItem.uomConversions)) {
+      inventoryItem.uomConversions.forEach((conv) => {
+        if (conv.unit) validUnits.add(conv.unit.trim().toLowerCase());
+      });
+    }
+
+    const providedUnitLower = purchaseUnit ? purchaseUnit.trim().toLowerCase() : "";
+    if (!validUnits.has(providedUnitLower)) {
+      throw new CustomError(
+        400,
+        `Invalid purchase unit '${purchaseUnit}' provided for product '${inventoryItem.productName}'. Valid units are: ${Array.from(validUnits).join(", ")}`
+      );
+    }
+
+    const purchaseUnitPrice = item.purchaseUnitPrice !== undefined && item.purchaseUnitPrice !== null
+      ? item.purchaseUnitPrice
+      : inventoryItem.buyingPrice;
+
+    if (purchaseUnitPrice < 0) {
+      throw new CustomError(400, `Purchase unit price cannot be negative for product '${inventoryItem.productName}'`);
+    }
+
+    // Calculate item total
+    const itemTotal = item.purchaseQuantity * purchaseUnitPrice;
+    calculatedTotalAmount += itemTotal;
+
+    return {
+      inventoryId: inventoryItem._id,
+      productName: inventoryItem.productName,
+      productCode: inventoryItem.productCode,
+      buyingPrice: inventoryItem.buyingPrice,
+      purchaseQuantity: item.purchaseQuantity,
+      purchaseUnit,
+      purchaseUnitPrice,
+    };
+  });
 
   // Handle payment logic
   let finalPaidAmount = 0;
   if (paymentType === "credit") {
     finalPaidAmount = paidAmount || 0;
   } else {
-    finalPaidAmount = totalAmount;
+    finalPaidAmount = calculatedTotalAmount;
   }
 
   // Generate PO number
@@ -58,7 +102,7 @@ export const createPurchase = asyncErrorHandler(async (req, res, next) => {
     supplierId,
     products: productsWithDetails,
     note: note || "No note available",
-    totalAmount,
+    totalAmount: calculatedTotalAmount,
     paymentType: paymentType || "paid",
     paidAmount: finalPaidAmount,
     dueDate: paymentType === "credit" ? dueDate : null,

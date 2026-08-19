@@ -23,6 +23,16 @@ const grnLineItemSchema = new mongoose.Schema(
       type: Date,
       default: null,
     },
+    receivedUnit: {
+      type: String,
+      trim: true,
+      default: null,
+    },
+    baseQuantity: {
+      type: Number,
+      required: [true, "Base quantity is required"],
+      min: [0, "Base quantity cannot be negative"],
+    },
     receivedQuantity: {
       type: Number,
       required: [true, "Received quantity is required"],

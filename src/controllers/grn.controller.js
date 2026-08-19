@@ -4,6 +4,10 @@ import Purchasing from "../models/purchasing.model.js";
 import Inventory from "../models/inventory.model.js";
 import { asyncErrorHandler } from "../utils/asyncErrorHandler.js";
 import CustomError from "../utils/customError.js";
+import { convertToBaseUnit } from "../utils/uom.utils.js";
+import { createStockAuditLog } from "../services/stockAuditLog.service.js";
+import WarehouseStock from "../models/warehouse.model.js";
+import StorefrontInventory from "../models/storefrontInventory.model.js";
 import { createDateFilter } from "../utils/dateFilter.utils.js";
 
 // Helper function to generate unique batch number in format BAT-YYYYMMDD-XXXX
@@ -22,399 +26,377 @@ const generateBatchNumber = () => {
 
 // Create new GRN (Supports Partial GRN - Can receive one or more items from PO)
 export const createGRN = asyncErrorHandler(async (req, res, next) => {
-  const { purchasingId, grnDate, lineItems, notes } = req.body;
+  const session = await mongoose.startSession();
+  session.startTransaction();
 
-  // Validate purchasingId
-  if (!purchasingId) {
-    return next(new CustomError(400, "Purchase order ID is required"));
-  }
+  try {
+    const { purchasingId, grnDate, lineItems, notes, warehouseId, locationId, locationType } = req.body;
 
-  if (!mongoose.Types.ObjectId.isValid(purchasingId)) {
-    return next(new CustomError(400, "Invalid purchase order ID format"));
-  }
+    // Validate purchasingId
+    if (!purchasingId) {
+      throw new CustomError(400, "Purchase order ID is required");
+    }
 
-  // Fetch PO with products
-  const purchaseOrder = await Purchasing.findById(purchasingId).lean(); // Use lean() to get plain JS object
-  if (!purchaseOrder) {
-    return next(new CustomError(404, "Purchase order not found"));
-  }
+    if (!mongoose.Types.ObjectId.isValid(purchasingId)) {
+      throw new CustomError(400, "Invalid purchase order ID format");
+    }
 
-  // Validate PO status - only "arrived" status allows GRN creation
-  if (purchaseOrder.status !== "arrived") {
-    return next(
-      new CustomError(
+    // Fetch PO with products
+    const purchaseOrder = await Purchasing.findById(purchasingId).lean(); // Use lean() to get plain JS object
+    if (!purchaseOrder) {
+      throw new CustomError(404, "Purchase order not found");
+    }
+
+    // Validate PO status - only "arrived" status allows GRN creation
+    if (purchaseOrder.status !== "arrived") {
+      throw new CustomError(
         400,
         `Cannot create GRN for purchase order with status '${purchaseOrder.status}'. Only purchase orders with status 'arrived' can have GRN created.`
-      )
-    );
-  }
+      );
+    }
 
-  // Check if PO has products
-  if (!purchaseOrder.products || purchaseOrder.products.length === 0) {
-    return next(new CustomError(400, "Purchase order has no products"));
-  }
+    // Check if PO has products
+    if (!purchaseOrder.products || purchaseOrder.products.length === 0) {
+      throw new CustomError(400, "Purchase order has no products");
+    }
 
-  // Validate line items (user provides only goodQuantity and badQuantity)
-  // System auto-creates line items from PO products
-  // warehouseId is optional - can be set later via transfer records
-  if (!lineItems || !Array.isArray(lineItems)) {
-    return next(
-      new CustomError(
+    if (!lineItems || !Array.isArray(lineItems)) {
+      throw new CustomError(
         400,
-        "Line items are required as an array. Provide goodQuantity and badQuantity for each product from the purchase order. warehouseId is optional and can be set later via transfer records."
-      )
-    );
-  }
+        "Line items are required as an array. Provide goodQuantity and badQuantity for each product from the purchase order."
+      );
+    }
 
-  if (lineItems.length === 0) {
-    return next(
-      new CustomError(
+    if (lineItems.length === 0) {
+      throw new CustomError(
         400,
         "At least one line item is required. Provide goodQuantity and badQuantity for products from the purchase order."
-      )
-    );
-  }
-
-
-
-  // Create a map of user-provided line items by productCode for easy lookup
-  const userLineItemsMap = new Map();
-  lineItems.forEach((item, index) => {
-    if (!item || typeof item !== "object") {
-      return next(
-        new CustomError(400, `Line item at index ${index} must be an object`)
       );
     }
-    if (!item.productCode) {
-      return next(
-        new CustomError(
+
+    // Create a map of user-provided line items by productCode for easy lookup
+    const userLineItemsMap = new Map();
+    lineItems.forEach((item, index) => {
+      if (!item || typeof item !== "object") {
+        throw new CustomError(400, `Line item at index ${index} must be an object`);
+      }
+      if (!item.productCode) {
+        throw new CustomError(
           400,
           `Line item at index ${index} is missing 'productCode'. Each line item must have a productCode to match products from the purchase order.`
-        )
-      );
-    }
-    const productCodeUpper = item.productCode.toUpperCase();
-    if (userLineItemsMap.has(productCodeUpper)) {
-      return next(
-        new CustomError(
+        );
+      }
+      const productCodeUpper = item.productCode.toUpperCase();
+      if (userLineItemsMap.has(productCodeUpper)) {
+        throw new CustomError(
           400,
           `Duplicate productCode '${item.productCode}' found in line items. Each product can only appear once per GRN.`
-        )
-      );
-    }
-    userLineItemsMap.set(productCodeUpper, item);
-  });
+        );
+      }
+      userLineItemsMap.set(productCodeUpper, item);
+    });
 
-  // Create a map of PO products by productCode for efficient lookup
-  const poProductsByCode = new Map();
-  purchaseOrder.products.forEach((poProduct) => {
-    const code = poProduct.productCode.toUpperCase();
-    poProductsByCode.set(code, poProduct);
-  });
+    // Create a map of PO products by productCode for efficient lookup
+    const poProductsByCode = new Map();
+    purchaseOrder.products.forEach((poProduct) => {
+      const code = poProduct.productCode.toUpperCase();
+      poProductsByCode.set(code, poProduct);
+    });
 
-  // Build GRN line items from user-provided line items (partial GRN support)
-  const grnLineItems = [];
-  let calculatedTotalAmount = 0;
+    // Batch fetch all inventory items for the PO products
+    const poProductCodes = purchaseOrder.products.map((p) => p.productCode.toUpperCase());
+    const inventoryItems = await Inventory.find({ productCode: { $in: poProductCodes } }).lean();
+    const inventoryMapByCode = new Map(
+      inventoryItems.map((item) => [item.productCode.toUpperCase(), item])
+    );
 
-  // Process only the products that user wants to receive (partial GRN)
-  for (const [productCodeUpper, userItem] of userLineItemsMap) {
-    // Find the corresponding PO product
-    const poProduct = poProductsByCode.get(productCodeUpper);
-    if (!poProduct) {
-      return next(
-        new CustomError(
+    // Build GRN line items from user-provided line items (partial GRN support)
+    const grnLineItems = [];
+    let calculatedTotalAmount = 0;
+
+    // Process only the products that user wants to receive (partial GRN)
+    for (const [productCodeUpper, userItem] of userLineItemsMap) {
+      // Find the corresponding PO product
+      const poProduct = poProductsByCode.get(productCodeUpper);
+      if (!poProduct) {
+        throw new CustomError(
           400,
           `Product with productCode '${userItem.productCode}' not found in purchase order.`
-        )
-      );
-    }
-    // Get inventoryId from PO product, or look it up by productCode if missing
-    let inventoryIdValue = poProduct.inventoryId;
-
-    // If inventoryId is missing, try to find it by productCode
-    if (
-      !inventoryIdValue ||
-      !mongoose.Types.ObjectId.isValid(inventoryIdValue)
-    ) {
-      const inventoryItem = await Inventory.findOne({
-        productCode: poProduct.productCode.toUpperCase(),
-      });
-
-      if (!inventoryItem) {
-        return next(
-          new CustomError(
-            404,
-            `Inventory item with productCode '${poProduct.productCode}' not found. Please ensure the product exists in inventory.`
-          )
         );
       }
 
-      inventoryIdValue = inventoryItem._id;
-    }
+      const inventoryItem = inventoryMapByCode.get(productCodeUpper);
+      if (!inventoryItem) {
+        throw new CustomError(
+          404,
+          `Inventory item with productCode '${poProduct.productCode}' not found.`
+        );
+      }
+      const inventoryIdValue = inventoryItem._id;
 
-    // Ensure inventoryId is a valid ObjectId
-    if (!mongoose.Types.ObjectId.isValid(inventoryIdValue)) {
-      return next(
-        new CustomError(
-          400,
-          `Invalid inventoryId format for product '${poProduct.productCode}'. Expected valid MongoDB ObjectId.`
-        )
-      );
-    }
-
-    // Convert to ObjectId
-    inventoryIdValue = new mongoose.Types.ObjectId(inventoryIdValue);
-
-    // Validate quantities (user only provides goodQuantity and badQuantity)
-    if (
-      userItem.goodQuantity === undefined ||
-      userItem.badQuantity === undefined
-    ) {
-      return next(
-        new CustomError(
+      // Validate quantities (user only provides goodQuantity and badQuantity)
+      if (
+        userItem.goodQuantity === undefined ||
+        userItem.badQuantity === undefined
+      ) {
+        throw new CustomError(
           400,
           `goodQuantity and badQuantity are required for product '${poProduct.productCode}'`
-        )
-      );
-    }
-
-    if (userItem.goodQuantity < 0 || userItem.badQuantity < 0) {
-      return next(new CustomError(400, "Quantities cannot be negative"));
-    }
-
-    // Calculate receivedQuantity from goodQuantity + badQuantity
-    const calculatedReceivedQuantity =
-      userItem.goodQuantity + userItem.badQuantity;
-
-    // Check if receivedQuantity is provided in the request (optional)
-    const providedReceivedQuantity = userItem.receivedQuantity;
-
-    // Validate that goodQuantity + badQuantity equals receivedQuantity
-    if (providedReceivedQuantity !== undefined) {
-      // If receivedQuantity is provided, validate it matches the sum
-      if (
-        typeof providedReceivedQuantity !== "number" ||
-        providedReceivedQuantity < 0
-      ) {
-        return next(
-          new CustomError(
-            400,
-            `For product '${poProduct.productCode}' (${poProduct.productName}): receivedQuantity must be a non-negative number.`
-          )
         );
       }
 
-      if (providedReceivedQuantity !== calculatedReceivedQuantity) {
-        return next(
-          new CustomError(
+      if (userItem.goodQuantity < 0 || userItem.badQuantity < 0) {
+        throw new CustomError(400, "Quantities cannot be negative");
+      }
+
+      // Calculate receivedQuantity from goodQuantity + badQuantity
+      const calculatedReceivedQuantity = userItem.goodQuantity + userItem.badQuantity;
+
+      // Check if receivedQuantity is provided in the request (optional)
+      const providedReceivedQuantity = userItem.receivedQuantity;
+
+      // Validate that goodQuantity + badQuantity equals receivedQuantity
+      let receivedQuantity;
+      if (providedReceivedQuantity !== undefined) {
+        if (
+          typeof providedReceivedQuantity !== "number" ||
+          providedReceivedQuantity < 0
+        ) {
+          throw new CustomError(
             400,
-            `For product '${poProduct.productCode}' (${poProduct.productName}): Validation failed - goodQuantity (${userItem.goodQuantity}) + badQuantity (${userItem.badQuantity}) = ${calculatedReceivedQuantity}, but receivedQuantity is ${providedReceivedQuantity}. These values must be equal. Please ensure: goodQuantity + badQuantity = receivedQuantity.`
-          )
+            `For product '${poProduct.productCode}': receivedQuantity must be a non-negative number.`
+          );
+        }
+
+        if (providedReceivedQuantity !== calculatedReceivedQuantity) {
+          throw new CustomError(
+            400,
+            `For product '${poProduct.productCode}': goodQuantity (${userItem.goodQuantity}) + badQuantity (${userItem.badQuantity}) = ${calculatedReceivedQuantity}, but receivedQuantity is ${providedReceivedQuantity}.`
+          );
+        }
+        receivedQuantity = providedReceivedQuantity;
+      } else {
+        receivedQuantity = calculatedReceivedQuantity;
+      }
+
+      const poPurchaseQuantity = poProduct.purchaseQuantity || 0;
+      const poReceivedQuantity = poProduct.receivedQuantity || 0;
+      const remainingQuantity = poPurchaseQuantity - poReceivedQuantity;
+
+      if (receivedQuantity > remainingQuantity) {
+        throw new CustomError(
+          400,
+          `Received quantity (${receivedQuantity}) for product '${poProduct.productCode}' exceeds remaining purchase order quantity.`
         );
       }
-      // Use the provided receivedQuantity (which matches the calculated value)
-      var receivedQuantity = providedReceivedQuantity;
-    } else {
-      // If receivedQuantity is not provided, auto-calculate it
-      var receivedQuantity = calculatedReceivedQuantity;
-    }
 
-    // Explicit validation: Ensure goodQuantity + badQuantity always equals receivedQuantity
-    // This is a final check to ensure data integrity
-    const sumOfGoodAndBad = userItem.goodQuantity + userItem.badQuantity;
-    if (receivedQuantity !== sumOfGoodAndBad) {
-      return next(
-        new CustomError(
-          400,
-          `For product '${poProduct.productCode}' (${poProduct.productName}): Data integrity validation failed. goodQuantity (${userItem.goodQuantity}) + badQuantity (${userItem.badQuantity}) = ${sumOfGoodAndBad}, but receivedQuantity is ${receivedQuantity}. These values must always be equal. Please ensure: goodQuantity + badQuantity = receivedQuantity.`
-        )
-      );
-    }
-
-    // Validate that receivedQuantity doesn't exceed remaining purchaseQuantity
-    // purchaseQuantity = original order quantity (never modified)
-    // receivedQuantity = total received from all GRNs
-    // remainingQuantity = purchaseQuantity - receivedQuantity
-    const poPurchaseQuantity = poProduct.purchaseQuantity || 0;
-    const poReceivedQuantity = poProduct.receivedQuantity || 0;
-    const remainingQuantity = poPurchaseQuantity - poReceivedQuantity;
-
-    // Validate that new receivedQuantity doesn't exceed remaining quantity
-    if (receivedQuantity > remainingQuantity) {
-      return next(
-        new CustomError(
-          400,
-          `Received quantity (${receivedQuantity}) for product '${poProduct.productCode}' (${poProduct.productName}) exceeds remaining purchase order quantity. Already received: ${poReceivedQuantity}, Remaining: ${remainingQuantity}, Total ordered: ${poPurchaseQuantity}.`
-        )
-      );
-    }
-
-    // Validate that at least some quantity is being received
-    if (receivedQuantity <= 0) {
-      return next(
-        new CustomError(
+      if (receivedQuantity <= 0) {
+        throw new CustomError(
           400,
           `Received quantity must be greater than 0 for product '${poProduct.productCode}'.`
-        )
+        );
+      }
+
+      const unitPrice =
+        userItem.unitPrice !== undefined
+          ? userItem.unitPrice
+          : poProduct.buyingPrice;
+      if (unitPrice < 0) {
+        throw new CustomError(400, "Unit price cannot be negative");
+      }
+
+      const totalPrice = receivedQuantity * unitPrice;
+
+      // UOM Conversion
+      const receivedUnit = userItem.receivedUnit || poProduct.purchaseUnit || inventoryItem.unitOfMeasure || inventoryItem.uom;
+      let baseQuantity;
+      try {
+        baseQuantity = convertToBaseUnit(inventoryItem, receivedUnit, receivedQuantity);
+      } catch (err) {
+        throw new CustomError(400, `For product '${poProduct.productCode}': ${err.message}`);
+      }
+
+      // Handle batch number
+      const userBatchNumber =
+        userItem.batchNumber && String(userItem.batchNumber).trim() !== ""
+          ? String(userItem.batchNumber).trim()
+          : null;
+
+      if (userBatchNumber && userBatchNumber !== "__LEGACY__") {
+        const existingBatch = await GoodsRecievedNote.findOne({
+          lineItems: {
+            $elemMatch: {
+              batchNumber: userBatchNumber,
+              inventoryId: inventoryIdValue,
+            },
+          },
+        });
+
+        if (existingBatch) {
+          throw new CustomError(
+            400,
+            `Batch number '${userBatchNumber}' already exists for product '${poProduct.productCode}'. Please use a unique batch number.`
+          );
+        }
+      }
+
+      const batchNumber = userBatchNumber || generateBatchNumber();
+      const expiryDate = userItem.expiryDate
+        ? new Date(userItem.expiryDate)
+        : null;
+      const manufacturingDate = userItem.manufacturingDate
+        ? new Date(userItem.manufacturingDate)
+        : null;
+
+      // Build line item
+      grnLineItems.push({
+        inventoryId: inventoryIdValue,
+        batchNumber,
+        expiryDate,
+        manufacturingDate,
+        receivedQuantity,
+        receivedUnit,
+        baseQuantity,
+        goodQuantity: userItem.goodQuantity,
+        badQuantity: userItem.badQuantity,
+        unitPrice,
+        totalPrice,
+        notes: userItem.notes || null,
+      });
+
+      calculatedTotalAmount += totalPrice;
+    }
+
+    const grnNumber = await GoodsRecievedNote.generateGRNNumber();
+
+    const grnData = {
+      grnNumber,
+      purchasingId,
+      grnDate: grnDate || new Date(),
+      lineItems: grnLineItems,
+      notes: notes || null,
+      totalAmount: calculatedTotalAmount,
+      status: "pending",
+    };
+
+    const newGRN = await GoodsRecievedNote.create([grnData], { session });
+    const savedGRN = newGRN[0];
+
+    // Update PO quantities
+    for (const grnLineItem of grnLineItems) {
+      await Purchasing.updateOne(
+        {
+          _id: purchasingId,
+          "products.inventoryId": grnLineItem.inventoryId,
+        },
+        {
+          $inc: {
+            "products.$.receivedQuantity": grnLineItem.receivedQuantity,
+          },
+        },
+        { session }
       );
     }
 
-    // Use unitPrice from request or fallback to PO's buyingPrice
-    const unitPrice =
-      userItem.unitPrice !== undefined
-        ? userItem.unitPrice
-        : poProduct.buyingPrice;
-    if (unitPrice < 0) {
-      return next(new CustomError(400, "Unit price cannot be negative"));
-    }
+    const updatedPO = await Purchasing.findById(purchasingId).session(session).lean();
 
-    // Calculate totalPrice = receivedQuantity * unitPrice
-    // You pay for what you receive (good + bad), not just good quantity
-    const totalPrice = receivedQuantity * unitPrice;
+    for (const product of updatedPO.products) {
+      const purchaseQty = product.purchaseQuantity || 0;
+      const receivedQty = product.receivedQuantity || 0;
+      const currentStatus = product.productStatus;
 
-    // Handle batch number, expiry date, and manufacturing date
-    const userBatchNumber =
-      userItem.batchNumber && String(userItem.batchNumber).trim() !== ""
-        ? String(userItem.batchNumber).trim()
-        : null;
-
-    if (userBatchNumber && userBatchNumber !== "__LEGACY__") {
-      const existingBatch = await GoodsRecievedNote.findOne({
-        lineItems: {
-          $elemMatch: {
-            batchNumber: userBatchNumber,
-            inventoryId: inventoryIdValue,
+      if (purchaseQty === receivedQty && currentStatus !== "seperated") {
+        await Purchasing.updateOne(
+          {
+            _id: purchasingId,
+            "products.inventoryId": product.inventoryId,
           },
-        },
-      });
-
-      if (existingBatch) {
-        return next(
-          new CustomError(
-            400,
-            `Batch number '${userBatchNumber}' already exists for product '${poProduct.productCode}'. Please use a unique batch number.`
-          )
+          {
+            $set: {
+              "products.$.productStatus": "seperated",
+            },
+          },
+          { session }
+        );
+      } else if (purchaseQty !== receivedQty && currentStatus !== "pending") {
+        await Purchasing.updateOne(
+          {
+            _id: purchasingId,
+            "products.inventoryId": product.inventoryId,
+          },
+          {
+            $set: {
+              "products.$.productStatus": "pending",
+            },
+          },
+          { session }
         );
       }
     }
 
-    const batchNumber = userBatchNumber || generateBatchNumber();
-    const expiryDate = userItem.expiryDate
-      ? new Date(userItem.expiryDate)
-      : null;
-    const manufacturingDate = userItem.manufacturingDate
-      ? new Date(userItem.manufacturingDate)
-      : null;
+    // Handle optional stock update using baseQuantity
+    const locId = warehouseId || locationId;
+    const locType = locationType || 'warehouse';
 
-    // Build line item with all data auto-filled from PO
-    const grnLineItem = {
-      inventoryId: inventoryIdValue, // Auto-filled from PO or looked up by productCode
-      batchNumber,
-      expiryDate,
-      manufacturingDate,
-      receivedQuantity: receivedQuantity, // Auto-calculated: goodQuantity + badQuantity
-      goodQuantity: userItem.goodQuantity, // User provides
-      badQuantity: userItem.badQuantity, // User provides
-      unitPrice: unitPrice, // Uses PO's buyingPrice if not provided
-      totalPrice: totalPrice, // Auto-calculated: receivedQuantity * unitPrice (pay for all received items)
-      notes: userItem.notes || null,
-    };
+    if (locId) {
+      for (const item of grnLineItems) {
+        if (locType === 'warehouse') {
+          const stockRecord = await WarehouseStock.findOneAndUpdate(
+            {
+              inventoryId: item.inventoryId,
+              warehouseId: locId,
+              batchNumber: item.batchNumber
+            },
+            {
+              $inc: { quantity: item.baseQuantity },
+              $set: { lastUpdated: new Date() },
+              $setOnInsert: {
+                expiryDate: item.expiryDate,
+                manufacturingDate: item.manufacturingDate
+              }
+            },
+            { upsert: true, new: true, session }
+          );
 
-    grnLineItems.push(grnLineItem);
-    calculatedTotalAmount += totalPrice;
-  }
-
-  // Note: Per-product validation is already done above
-  // This is a final safety check (though redundant, it's kept for extra safety)
-  // Individual product validations ensure receivedQuantity <= remainingQuantity for each product
-
-  // Generate GRN number
-  const grnNumber = await GoodsRecievedNote.generateGRNNumber();
-
-  // Create GRN
-  const grnData = {
-    grnNumber,
-    purchasingId,
-    grnDate: grnDate || new Date(),
-    lineItems: grnLineItems,
-    notes: notes || null,
-    totalAmount: calculatedTotalAmount, // Auto-calculated
-    status: "pending",
-  };
-
-  const newGRN = await GoodsRecievedNote.create(grnData);
-
-  // Increment receivedQuantity in PO for each product
-  // purchaseQuantity remains unchanged (preserves original order quantity)
-  // receivedQuantity tracks total received from all GRNs
-  // If purchaseQuantity === receivedQuantity, update productStatus to "seperated"
-  for (const grnLineItem of grnLineItems) {
-    // First, increment receivedQuantity
-    await Purchasing.updateOne(
-      {
-        _id: purchasingId,
-        "products.inventoryId": grnLineItem.inventoryId,
-      },
-      {
-        $inc: {
-          "products.$.receivedQuantity": grnLineItem.receivedQuantity,
-        },
+          await createStockAuditLog({
+            inventoryId: item.inventoryId,
+            adminId: req.user._id,
+            locationId: locId,
+            locationType: 'warehouse',
+            stockRecordId: stockRecord._id,
+            beforeQuantity: (stockRecord.quantity - item.baseQuantity),
+            afterQuantity: stockRecord.quantity,
+            quantityChange: item.baseQuantity,
+            action: 'add',
+            reason: `GRN Received: ${purchaseOrder.poNumber}`,
+            relatedTransactionId: savedGRN._id,
+            relatedTransactionType: 'grn',
+            session
+          });
+        }
       }
+    }
+
+    await session.commitTransaction();
+    session.endSession();
+
+    // Populate references for response
+    await savedGRN.populate("purchasingId", "status totalAmount");
+    await savedGRN.populate(
+      "lineItems.inventoryId",
+      "productName productCode SKU sellingPrice"
     );
+
+    res.status(201).json({
+      success: true,
+      message: "GRN created successfully",
+      data: savedGRN,
+    });
+  } catch (error) {
+    await session.abortTransaction();
+    session.endSession();
+    return next(error);
   }
-
-  // After updating all receivedQuantities, fetch the updated PO to check status updates
-  const updatedPO = await Purchasing.findById(purchasingId).lean();
-
-  // Check ALL products in the PO to ensure their status is correct
-  // This handles cases where multiple GRNs might affect different products
-  for (const product of updatedPO.products) {
-    const purchaseQty = product.purchaseQuantity || 0;
-    const receivedQty = product.receivedQuantity || 0;
-    const currentStatus = product.productStatus;
-
-    // If purchaseQuantity equals receivedQuantity, status should be "seperated"
-    if (purchaseQty === receivedQty && currentStatus !== "seperated") {
-      await Purchasing.updateOne(
-        {
-          _id: purchasingId,
-          "products.inventoryId": product.inventoryId,
-        },
-        {
-          $set: {
-            "products.$.productStatus": "seperated",
-          },
-        }
-      );
-    }
-    // If purchaseQuantity does NOT equal receivedQuantity, status should be "pending"
-    else if (purchaseQty !== receivedQty && currentStatus !== "pending") {
-      await Purchasing.updateOne(
-        {
-          _id: purchasingId,
-          "products.inventoryId": product.inventoryId,
-        },
-        {
-          $set: {
-            "products.$.productStatus": "pending",
-          },
-        }
-      );
-    }
-  }
-
-  // Populate references for response
-  await newGRN.populate("purchasingId", "status totalAmount");
-  await newGRN.populate(
-    "lineItems.inventoryId",
-    "productName productCode SKU sellingPrice"
-  );
-
-  res.status(201).json({
-    success: true,
-    message: "GRN created successfully",
-    data: newGRN,
-  });
 });
 
 // Get all GRNs
