@@ -303,7 +303,7 @@ export const getPurchaseById = asyncErrorHandler(async (req, res, next) => {
 export const updatePurchaseStatus = asyncErrorHandler(
   async (req, res, next) => {
     const { id } = req.params;
-    const { status } = req.body;
+    const { status, dueDate } = req.body;
 
     // Validate MongoDB ObjectId format
     if (!mongoose.Types.ObjectId.isValid(id)) {
@@ -341,10 +341,15 @@ export const updatePurchaseStatus = asyncErrorHandler(
       );
     }
 
-    // Update the status
+    // Update the status and optionally dueDate
+    const updateData = { status };
+    if (dueDate !== undefined) {
+      updateData.dueDate = dueDate;
+    }
+
     const purchase = await Purchasing.findOneAndUpdate(
       { _id: id, isDeleted: false },
-      { status },
+      updateData,
       { new: true, runValidators: true }
     );
 
