@@ -208,7 +208,10 @@ export const createGRN = asyncErrorHandler(async (req, res, next) => {
       const totalPrice = receivedQuantity * unitPrice;
 
       // UOM Conversion
-      const receivedUnit = userItem.receivedUnit || poProduct.purchaseUnit || inventoryItem.unitOfMeasure || inventoryItem.uom;
+      if (!userItem.receivedUnit && !poProduct.purchaseUnit) {
+        throw new CustomError(400, `receivedUnit is required for product '${poProduct.productCode}'`);
+      }
+      const receivedUnit = userItem.receivedUnit || poProduct.purchaseUnit;
       let baseQuantity;
       try {
         baseQuantity = convertToBaseUnit(inventoryItem, receivedUnit, receivedQuantity);
@@ -341,38 +344,58 @@ export const createGRN = asyncErrorHandler(async (req, res, next) => {
     if (locId) {
       for (const item of grnLineItems) {
         if (locType === 'warehouse') {
-          const stockRecord = await WarehouseStock.findOneAndUpdate(
-            {
+          // Find existing stock record or create one with 0 quantity if it doesn't exist
+          let stockRecord = await WarehouseStock.findOne({
+            inventoryId: item.inventoryId,
+            warehouseId: locId,
+            batchNumber: item.batchNumber
+          }).session(session);
+
+          let beforeQty = 0;
+          if (!stockRecord) {
+            const newStock = await WarehouseStock.create([{
               inventoryId: item.inventoryId,
               warehouseId: locId,
-              batchNumber: item.batchNumber
-            },
-            {
-              $inc: { quantity: item.baseQuantity },
-              $set: { lastUpdated: new Date() },
-              $setOnInsert: {
-                expiryDate: item.expiryDate,
-                manufacturingDate: item.manufacturingDate
-              }
-            },
-            { upsert: true, new: true, session }
-          );
+              batchNumber: item.batchNumber,
+              quantity: 0,
+              expiryDate: item.expiryDate,
+              manufacturingDate: item.manufacturingDate,
+              lastUpdated: new Date()
+            }], { session });
+            stockRecord = newStock[0];
+          } else {
+            beforeQty = stockRecord.quantity;
+          }
 
+          const changeQty = item.baseQuantity;
+          const afterQty = beforeQty + changeQty;
+
+          // Log the transaction before updating the stock
           await createStockAuditLog({
             inventoryId: item.inventoryId,
             adminId: req.user._id,
             locationId: locId,
             locationType: 'warehouse',
             stockRecordId: stockRecord._id,
-            beforeQuantity: (stockRecord.quantity - item.baseQuantity),
-            afterQuantity: stockRecord.quantity,
-            quantityChange: item.baseQuantity,
+            beforeQuantity: beforeQty,
+            afterQuantity: afterQty,
+            quantityChange: changeQty,
             action: 'add',
             reason: `GRN Received: ${purchaseOrder.poNumber}`,
             relatedTransactionId: savedGRN._id,
             relatedTransactionType: 'grn',
             session
           });
+
+          // Update actual Inventory/Warehouse stock strictly utilizing the $inc operator with Base Quantity
+          await WarehouseStock.updateOne(
+            { _id: stockRecord._id },
+            {
+              $inc: { quantity: changeQty },
+              $set: { lastUpdated: new Date() }
+            },
+            { session }
+          );
         }
       }
     }

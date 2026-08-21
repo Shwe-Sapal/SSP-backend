@@ -44,9 +44,12 @@ export const createPurchase = asyncErrorHandler(async (req, res, next) => {
     }
 
     // UOM Validation
-    const purchaseUnit = item.purchaseUnit || inventoryItem.unitOfMeasure || inventoryItem.uom;
+    if (!item.purchaseUnit) {
+      throw new CustomError(400, `purchaseUnit is required for product '${inventoryItem.productName}'`);
+    }
+    const purchaseUnit = item.purchaseUnit;
     const baseUnit = (inventoryItem.unitOfMeasure || inventoryItem.uom || "").trim().toLowerCase();
-    
+
     // Build set of valid units (base unit + conversion units)
     const validUnits = new Set([baseUnit]);
     if (inventoryItem.uomConversions && Array.isArray(inventoryItem.uomConversions)) {
@@ -55,7 +58,7 @@ export const createPurchase = asyncErrorHandler(async (req, res, next) => {
       });
     }
 
-    const providedUnitLower = purchaseUnit ? purchaseUnit.trim().toLowerCase() : "";
+    const providedUnitLower = purchaseUnit.trim().toLowerCase();
     if (!validUnits.has(providedUnitLower)) {
       throw new CustomError(
         400,
@@ -63,9 +66,10 @@ export const createPurchase = asyncErrorHandler(async (req, res, next) => {
       );
     }
 
-    const purchaseUnitPrice = item.purchaseUnitPrice !== undefined && item.purchaseUnitPrice !== null
-      ? item.purchaseUnitPrice
-      : inventoryItem.buyingPrice;
+    if (item.purchaseUnitPrice === undefined || item.purchaseUnitPrice === null) {
+      throw new CustomError(400, `purchaseUnitPrice is required for product '${inventoryItem.productName}'`);
+    }
+    const purchaseUnitPrice = item.purchaseUnitPrice;
 
     if (purchaseUnitPrice < 0) {
       throw new CustomError(400, `Purchase unit price cannot be negative for product '${inventoryItem.productName}'`);
@@ -157,8 +161,7 @@ export const getAllPurchases = asyncErrorHandler(async (req, res, next) => {
   if (status !== undefined) {
     const validStatuses = [
       "pending",
-      "confirmed",
-      "arrived",
+      "confirmed", "arrived",
       "cancelled",
       "completed",
     ];

@@ -23,19 +23,19 @@ const productSchema = new mongoose.Schema(
     // The unit selected when creating the PO
     purchaseUnit: { 
       type: String, 
-      trim: true, 
-      default: null 
+      required: true,
+      trim: true
     },
     // The price per single purchase unit
     purchaseUnitPrice: { 
       type: Number, 
+      required: true,
       min: 0 
     },
     // The unit used when receiving goods during GRN
     receivedUnit: { 
       type: String, 
-      trim: true, 
-      default: null 
+      trim: true
     },
     purchaseQuantity: {
       type: Number,
