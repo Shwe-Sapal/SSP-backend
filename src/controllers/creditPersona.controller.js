@@ -39,13 +39,19 @@ export const getCreditPersonById = asyncErrorHandler(async (req, res, next) => {
 
 export const updateCreditPerson = asyncErrorHandler(async (req, res, next) => {
   const { id } = req.params;
-  const { name, phone, address, township } = req.body;
+  const { name, phone, address, township, blacklist } = req.body;
   if (!mongoose.Types.ObjectId.isValid(id)) {
     return next(new CustomError(400, "Invalid credit person ID format"));
   }
+
+  const updateData = { name, phone, address, township };
+  if (blacklist !== undefined) {
+    updateData.blacklist = blacklist;
+  }
+
   const creditPerson = await CreditPerson.findByIdAndUpdate(
     id,
-    { name, phone, address, township },
+    updateData,
     { new: true }
   );
   if (!creditPerson) {

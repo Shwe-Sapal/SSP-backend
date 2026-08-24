@@ -310,6 +310,7 @@ export const getAllStorefrontInventory = asyncErrorHandler(
     pipeline.push({
       $group: {
         _id: "$inventoryId._id", 
+        stockRecordId: { $first: "$_id" },
         inventoryId: { $first: "$inventoryId" }, 
         storefrontId: { $first: "$storefrontId" }, 
         quantity: { $sum: "$quantity" }, 
