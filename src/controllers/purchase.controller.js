@@ -540,3 +540,134 @@ export const updatePurchaseItemQuantity = asyncErrorHandler(
     });
   }
 );
+
+// Add a new item to an existing pending purchase order
+export const addPurchaseItem = asyncErrorHandler(async (req, res, next) => {
+  const { id: poId } = req.params;
+  const { inventoryId, purchaseQuantity, purchaseUnit, purchaseUnitPrice } = req.body;
+
+  if (!mongoose.Types.ObjectId.isValid(poId)) {
+    return next(new CustomError(400, "Invalid purchase order ID format"));
+  }
+
+  if (!inventoryId || !purchaseQuantity || !purchaseUnit || purchaseUnitPrice === undefined) {
+    return next(new CustomError(400, "inventoryId, purchaseQuantity, purchaseUnit, and purchaseUnitPrice are required"));
+  }
+
+  const purchase = await Purchasing.findOne({ _id: poId, isDeleted: false });
+  if (!purchase) {
+    return next(new CustomError(404, "Purchase order not found"));
+  }
+
+  if (purchase.status !== "pending") {
+    return next(new CustomError(400, `Cannot add items to a purchase order with status '${purchase.status}'. Only 'pending' POs can be edited.`));
+  }
+
+  const existingItemIndex = purchase.products.findIndex(
+    (item) => item.inventoryId.toString() === inventoryId.toString()
+  );
+
+  if (existingItemIndex > -1) {
+    return next(new CustomError(400, "Product already exists in this purchase order. Please update its quantity instead."));
+  }
+
+  const inventoryItem = await Inventory.findById(inventoryId).lean();
+  if (!inventoryItem) {
+    return next(new CustomError(404, `Product with ID ${inventoryId} not found in inventory`));
+  }
+
+  const baseUnit = (inventoryItem.unitOfMeasure || inventoryItem.uom || "").trim().toLowerCase();
+  const validUnits = new Set([baseUnit]);
+  if (inventoryItem.uomConversions && Array.isArray(inventoryItem.uomConversions)) {
+    inventoryItem.uomConversions.forEach((conv) => {
+      if (conv.unit) validUnits.add(conv.unit.trim().toLowerCase());
+    });
+  }
+
+  const providedUnitLower = purchaseUnit.trim().toLowerCase();
+  if (!validUnits.has(providedUnitLower)) {
+    return next(new CustomError(
+      400,
+      `Invalid purchase unit '${purchaseUnit}' provided. Valid units are: ${Array.from(validUnits).join(", ")}`
+    ));
+  }
+
+  if (purchaseUnitPrice < 0) {
+    return next(new CustomError(400, "Purchase unit price cannot be negative"));
+  }
+  if (purchaseQuantity <= 0) {
+    return next(new CustomError(400, "Purchase quantity must be greater than zero"));
+  }
+
+  const newItem = {
+    inventoryId: inventoryItem._id,
+    productName: inventoryItem.productName,
+    productCode: inventoryItem.productCode,
+    buyingPrice: inventoryItem.buyingPrice,
+    purchaseQuantity,
+    purchaseUnit,
+    purchaseUnitPrice,
+  };
+
+  purchase.products.push(newItem);
+
+  let newTotalAmount = 0;
+  for (const p of purchase.products) {
+    const qty = p.purchaseQuantity || 0;
+    const price = p.purchaseUnitPrice || 0;
+    newTotalAmount += qty * price;
+  }
+  purchase.totalAmount = newTotalAmount;
+
+  await purchase.save();
+
+  res.status(200).json({
+    success: true,
+    message: "Item added to purchase order successfully",
+    data: purchase,
+  });
+});
+
+// Remove an item from a pending purchase order
+export const removePurchaseItem = asyncErrorHandler(async (req, res, next) => {
+  const { id: poId, itemId } = req.params;
+
+  if (!mongoose.Types.ObjectId.isValid(poId)) {
+    return next(new CustomError(400, "Invalid purchase order ID format"));
+  }
+  if (!mongoose.Types.ObjectId.isValid(itemId)) {
+    return next(new CustomError(400, "Invalid item ID format"));
+  }
+
+  const purchase = await Purchasing.findOne({ _id: poId, isDeleted: false });
+  if (!purchase) {
+    return next(new CustomError(404, "Purchase order not found"));
+  }
+
+  if (purchase.status !== "pending") {
+    return next(new CustomError(400, `Cannot remove items from a purchase order with status '${purchase.status}'. Only 'pending' POs can be edited.`));
+  }
+
+  const product = purchase.products.id(itemId);
+  if (!product) {
+    return next(new CustomError(404, "Product item not found in this purchase order"));
+  }
+
+  purchase.products.pull(itemId);
+
+  let newTotalAmount = 0;
+  for (const p of purchase.products) {
+    const qty = p.purchaseQuantity || 0;
+    const price = p.purchaseUnitPrice || 0;
+    newTotalAmount += qty * price;
+  }
+  purchase.totalAmount = newTotalAmount;
+
+  await purchase.save();
+
+  res.status(200).json({
+    success: true,
+    message: "Item removed from purchase order successfully",
+    data: purchase,
+  });
+});

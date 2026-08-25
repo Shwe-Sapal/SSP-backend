@@ -8,6 +8,8 @@ import {
   softDeletePurchase,
   restorePurchase,
   hardDeletePurchase,
+  addPurchaseItem,
+  removePurchaseItem,
 } from "../controllers/purchase.controller.js";
 import {
   createSupplierPayment,
@@ -51,6 +53,18 @@ router.patch(
   protect,
   permissionGranted("owner", "admin"),
   updatePurchaseItemQuantity
+);
+router.post(
+  "/purchase/:id/items",
+  protect,
+  permissionGranted("owner", "admin"),
+  addPurchaseItem
+);
+router.delete(
+  "/purchase/:id/items/:itemId",
+  protect,
+  permissionGranted("owner", "admin"),
+  removePurchaseItem
 );
 router.patch(
   "/purchase/:id/soft-delete",
