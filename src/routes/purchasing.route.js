@@ -4,6 +4,7 @@ import {
   getAllPurchases,
   getPurchaseById,
   updatePurchaseStatus,
+  updatePurchaseItemQuantity,
   softDeletePurchase,
   restorePurchase,
   hardDeletePurchase,
@@ -44,6 +45,12 @@ router.patch(
   protect,
   permissionGranted("owner", "admin"),
   updatePurchaseStatus
+);
+router.patch(
+  "/purchase/:id/items/:itemId",
+  protect,
+  permissionGranted("owner", "admin"),
+  updatePurchaseItemQuantity
 );
 router.patch(
   "/purchase/:id/soft-delete",

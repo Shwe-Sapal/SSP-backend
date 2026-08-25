@@ -183,10 +183,21 @@ export const createGRN = asyncErrorHandler(async (req, res, next) => {
       const poReceivedQuantity = poProduct.receivedQuantity || 0;
       const remainingQuantity = poPurchaseQuantity - poReceivedQuantity;
 
-      if (receivedQuantity > remainingQuantity) {
+      // Convert remaining PO quantity (in purchase units) to base units for comparison,
+      // since the incoming receivedQuantity from the frontend is already in base units.
+      const purchaseUnitForConversion = poProduct.purchaseUnit || userItem.receivedUnit;
+      let remainingInBaseUnits;
+      try {
+        remainingInBaseUnits = convertToBaseUnit(inventoryItem, purchaseUnitForConversion, remainingQuantity);
+      } catch {
+        // If conversion fails (e.g., same unit), fall back to raw remaining quantity
+        remainingInBaseUnits = remainingQuantity;
+      }
+
+      if (receivedQuantity > remainingInBaseUnits) {
         throw new CustomError(
           400,
-          `Received quantity (${receivedQuantity}) for product '${poProduct.productCode}' exceeds remaining purchase order quantity.`
+          `Received quantity (${receivedQuantity}) for product '${poProduct.productCode}' exceeds remaining purchase order quantity (${remainingInBaseUnits} in base units).`
         );
       }
 
@@ -286,7 +297,31 @@ export const createGRN = asyncErrorHandler(async (req, res, next) => {
     const savedGRN = newGRN[0];
 
     // Update PO quantities
+    // The PO stores quantities in purchase units, so we need to convert
+    // the received base-unit quantity back to purchase units before updating.
     for (const grnLineItem of grnLineItems) {
+      // Find the matching PO product to get its purchaseUnit
+      const matchingPoProduct = purchaseOrder.products.find(
+        (p) => p.inventoryId.toString() === grnLineItem.inventoryId.toString()
+      );
+      const poUnit = matchingPoProduct?.purchaseUnit || grnLineItem.receivedUnit;
+      const invItem = inventoryMapByCode.get(
+        matchingPoProduct?.productCode?.toUpperCase()
+      );
+
+      // Convert receivedQuantity (base units) back to purchase units for PO update
+      let qtyInPurchaseUnit = grnLineItem.receivedQuantity;
+      if (invItem && poUnit) {
+        try {
+          const factor = convertToBaseUnit(invItem, poUnit, 1); // get factor for 1 purchase unit
+          if (factor > 0) {
+            qtyInPurchaseUnit = grnLineItem.receivedQuantity / factor;
+          }
+        } catch {
+          // If conversion fails, use receivedQuantity as-is (same unit scenario)
+        }
+      }
+
       await Purchasing.updateOne(
         {
           _id: purchasingId,
@@ -294,7 +329,7 @@ export const createGRN = asyncErrorHandler(async (req, res, next) => {
         },
         {
           $inc: {
-            "products.$.receivedQuantity": grnLineItem.receivedQuantity,
+            "products.$.receivedQuantity": qtyInPurchaseUnit,
           },
         },
         { session }

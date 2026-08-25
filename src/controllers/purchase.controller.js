@@ -453,3 +453,90 @@ export const hardDeletePurchase = asyncErrorHandler(async (req, res, next) => {
     data: null,
   });
 });
+
+// Update a specific product's purchaseQuantity within a PO
+export const updatePurchaseItemQuantity = asyncErrorHandler(
+  async (req, res, next) => {
+    const { id: poId, itemId } = req.params;
+    const { purchaseQuantity } = req.body;
+
+    // Validate MongoDB ObjectId formats
+    if (!mongoose.Types.ObjectId.isValid(poId)) {
+      return next(new CustomError(400, "Invalid purchase order ID format"));
+    }
+    if (!mongoose.Types.ObjectId.isValid(itemId)) {
+      return next(new CustomError(400, "Invalid item ID format"));
+    }
+
+    // Validate purchaseQuantity
+    if (purchaseQuantity === undefined || purchaseQuantity === null) {
+      return next(new CustomError(400, "purchaseQuantity is required"));
+    }
+    if (typeof purchaseQuantity !== "number" || purchaseQuantity <= 0) {
+      return next(
+        new CustomError(400, "purchaseQuantity must be a positive number")
+      );
+    }
+
+    // Find the PO (non-deleted only)
+    const purchase = await Purchasing.findOne({
+      _id: poId,
+      isDeleted: false,
+    });
+
+    if (!purchase) {
+      return next(new CustomError(404, "Purchase order not found"));
+    }
+
+    // Only allow edits on POs that haven't been fully received/completed
+    const editableStatuses = ["pending", "confirmed"];
+    if (!editableStatuses.includes(purchase.status)) {
+      return next(
+        new CustomError(
+          400,
+          `Cannot edit quantities for a purchase order with status '${purchase.status}'. Only 'pending' or 'confirmed' POs can be edited.`
+        )
+      );
+    }
+
+    // Find the specific product subdocument
+    const product = purchase.products.id(itemId);
+    if (!product) {
+      return next(
+        new CustomError(404, "Product item not found in this purchase order")
+      );
+    }
+
+    // Prevent reducing below already-received quantity
+    const alreadyReceived = product.receivedQuantity || 0;
+    if (purchaseQuantity < alreadyReceived) {
+      return next(
+        new CustomError(
+          400,
+          `Cannot set purchaseQuantity (${purchaseQuantity}) below already received quantity (${alreadyReceived}).`
+        )
+      );
+    }
+
+    // Update the product's purchaseQuantity
+    const oldQuantity = product.purchaseQuantity;
+    product.purchaseQuantity = purchaseQuantity;
+
+    // Recalculate PO totalAmount from all products
+    let newTotalAmount = 0;
+    for (const p of purchase.products) {
+      const qty = p.purchaseQuantity || 0;
+      const price = p.purchaseUnitPrice || 0;
+      newTotalAmount += qty * price;
+    }
+    purchase.totalAmount = newTotalAmount;
+
+    await purchase.save();
+
+    res.status(200).json({
+      success: true,
+      message: `Product quantity updated from ${oldQuantity} to ${purchaseQuantity}`,
+      data: purchase,
+    });
+  }
+);
