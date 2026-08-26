@@ -23,11 +23,16 @@
  * @throws {Error} If no matching conversion entry is found.
  */
 function getEffectiveFactor(conversions, baseUnit, selectedUnit) {
-  // When the selected unit already IS the base unit, no conversion is needed.
-  if (selectedUnit === baseUnit) return 1;
+  const normalizedSelectedUnit = selectedUnit ? String(selectedUnit).toLowerCase().trim() : "";
+  const normalizedBaseUnit = baseUnit ? String(baseUnit).toLowerCase().trim() : "";
 
-  // Attempt to locate a matching conversion entry (case-sensitive match).
-  const entry = conversions.find((conv) => conv.unit === selectedUnit);
+  // When the selected unit already IS the base unit, no conversion is needed.
+  if (normalizedSelectedUnit === normalizedBaseUnit) return 1;
+
+  // Attempt to locate a matching conversion entry (case-insensitive match).
+  const entry = conversions.find(
+    (conv) => conv.unit && String(conv.unit).toLowerCase().trim() === normalizedSelectedUnit
+  );
 
   if (entry) return entry.factor;
 

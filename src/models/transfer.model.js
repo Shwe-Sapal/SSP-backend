@@ -26,6 +26,15 @@ const transferLineItemSchema = new mongoose.Schema(
       required: [true, "Transfer quantity is required"],
       min: [0, "Transfer quantity cannot be negative"],
     },
+    transferUnit: {
+      type: String,
+      required: [true, "Transfer unit is required"],
+    },
+    baseQuantity: {
+      type: Number,
+      required: [true, "Base quantity is required"],
+      min: [0.000001, "Base quantity must be strictly greater than 0"],
+    },
     // Optional reference to GRN line item if source is GRN
     grnLineItemId: {
       type: mongoose.Schema.Types.ObjectId,
@@ -196,7 +205,7 @@ transferSchema.index({ transferredBy: 1 }); // Index for admin who created the t
 
 // Virtual for total transfer quantity
 transferSchema.virtual("totalQuantity").get(function () {
-  return this.lineItems.reduce((sum, item) => sum + item.quantity, 0);
+  return this.lineItems.reduce((sum, item) => sum + item.baseQuantity, 0);
 });
 
 // Static method to generate transfer number
@@ -308,7 +317,7 @@ transferSchema.methods._updateGRNToWarehouseStock = async function (
 
   // Process each transfer line item
   for (const transferItem of this.lineItems) {
-    if (transferItem.quantity <= 0) continue;
+    if (transferItem.baseQuantity <= 0) continue;
 
     // Find corresponding GRN line item
     let grnLineItem = null;
@@ -342,9 +351,9 @@ transferSchema.methods._updateGRNToWarehouseStock = async function (
     // Validate available quantity
     const availableQty =
       grnLineItem.goodQuantity - (grnLineItem.transferredQuantity || 0);
-    if (transferItem.quantity > availableQty) {
+    if (transferItem.baseQuantity > availableQty) {
       throw new Error(
-        `Transfer quantity (${transferItem.quantity}) exceeds available quantity (${availableQty}) for inventory ${transferItem.inventoryId}`
+        `Transfer quantity (${transferItem.baseQuantity}) exceeds available quantity (${availableQty}) for inventory ${transferItem.inventoryId}`
       );
     }
 
@@ -354,7 +363,7 @@ transferSchema.methods._updateGRNToWarehouseStock = async function (
       { _id: this.sourceId, "lineItems._id": grnLineItem._id },
       {
         $inc: {
-          [`lineItems.$.transferredQuantity`]: transferItem.quantity,
+          [`lineItems.$.transferredQuantity`]: transferItem.baseQuantity,
         },
       },
       { new: true, session }
@@ -382,7 +391,7 @@ transferSchema.methods._updateGRNToWarehouseStock = async function (
         warehouseId: this.destinationWarehouseId,
       },
       {
-        $inc: { quantity: transferItem.quantity },
+        $inc: { quantity: transferItem.baseQuantity },
         $set: {
           lastUpdated: new Date(),
         },
@@ -392,7 +401,7 @@ transferSchema.methods._updateGRNToWarehouseStock = async function (
           batchNumber: batchNumber,
           expiryDate: expiryDate,
           manufacturingDate: manufacturingDate,
-          // quantity is handled by $inc - if document doesn't exist, $inc creates it with transferItem.quantity
+          // quantity is handled by $inc - if document doesn't exist, $inc creates it with transferItem.baseQuantity
         },
       },
       {
@@ -423,7 +432,7 @@ transferSchema.methods._updateGRNToStorefrontStock = async function (
 
   // Process each transfer line item
   for (const transferItem of this.lineItems) {
-    if (transferItem.quantity <= 0) continue;
+    if (transferItem.baseQuantity <= 0) continue;
 
     // Find corresponding GRN line item
     let grnLineItem = null;
@@ -457,9 +466,9 @@ transferSchema.methods._updateGRNToStorefrontStock = async function (
     // Validate available quantity
     const availableQty =
       grnLineItem.goodQuantity - (grnLineItem.transferredQuantity || 0);
-    if (transferItem.quantity > availableQty) {
+    if (transferItem.baseQuantity > availableQty) {
       throw new Error(
-        `Transfer quantity (${transferItem.quantity}) exceeds available quantity (${availableQty}) for inventory ${transferItem.inventoryId}`
+        `Transfer quantity (${transferItem.baseQuantity}) exceeds available quantity (${availableQty}) for inventory ${transferItem.inventoryId}`
       );
     }
 
@@ -469,7 +478,7 @@ transferSchema.methods._updateGRNToStorefrontStock = async function (
       { _id: this.sourceId, "lineItems._id": grnLineItem._id },
       {
         $inc: {
-          [`lineItems.$.transferredQuantity`]: transferItem.quantity,
+          [`lineItems.$.transferredQuantity`]: transferItem.baseQuantity,
         },
       },
       { new: true, session }
@@ -498,7 +507,7 @@ transferSchema.methods._updateGRNToStorefrontStock = async function (
         batchNumber: batchNumber,
       },
       {
-        $inc: { quantity: transferItem.quantity },
+        $inc: { quantity: transferItem.baseQuantity },
         $set: {
           lastUpdated: new Date(),
         },
@@ -508,7 +517,7 @@ transferSchema.methods._updateGRNToStorefrontStock = async function (
           batchNumber: batchNumber,
           expiryDate: expiryDate,
           manufacturingDate: manufacturingDate,
-          // quantity is handled by $inc - if document doesn't exist, $inc creates it with transferItem.quantity
+          // quantity is handled by $inc - if document doesn't exist, $inc creates it with transferItem.baseQuantity
         },
       },
       {
@@ -541,7 +550,7 @@ transferSchema.methods._updateWarehouseToStorefrontStock = async function (
 
   // Process each transfer line item
   for (const transferItem of this.lineItems) {
-    if (transferItem.quantity <= 0) continue;
+    if (transferItem.baseQuantity <= 0) continue;
 
     const batchNumber = transferItem.batchNumber || "__LEGACY__";
 
@@ -559,9 +568,9 @@ transferSchema.methods._updateWarehouseToStorefrontStock = async function (
     }
 
     const availableQty = warehouseStock.quantity || 0;
-    if (transferItem.quantity > availableQty) {
+    if (transferItem.baseQuantity > availableQty) {
       throw new Error(
-        `Transfer quantity (${transferItem.quantity}) exceeds available warehouse stock (${availableQty}) for inventory ${transferItem.inventoryId} (batch: ${batchNumber})`
+        `Transfer quantity (${transferItem.baseQuantity}) exceeds available warehouse stock (${availableQty}) for inventory ${transferItem.inventoryId} (batch: ${batchNumber})`
       );
     }
 
@@ -573,7 +582,7 @@ transferSchema.methods._updateWarehouseToStorefrontStock = async function (
         batchNumber: batchNumber,
       },
       {
-        $inc: { quantity: -transferItem.quantity }, // Negative to deduct
+        $inc: { quantity: -transferItem.baseQuantity }, // Negative to deduct
         $set: { lastUpdated: new Date() },
       },
       {
@@ -596,7 +605,7 @@ transferSchema.methods._updateWarehouseToStorefrontStock = async function (
         batchNumber: batchNumber,
       },
       {
-        $inc: { quantity: transferItem.quantity },
+        $inc: { quantity: transferItem.baseQuantity },
         $set: {
           lastUpdated: new Date(),
         },
@@ -606,7 +615,7 @@ transferSchema.methods._updateWarehouseToStorefrontStock = async function (
           batchNumber: batchNumber,
           expiryDate: expiryDate,
           manufacturingDate: manufacturingDate,
-          // quantity is handled by $inc - if document doesn't exist, $inc creates it with transferItem.quantity
+          // quantity is handled by $inc - if document doesn't exist, $inc creates it with transferItem.baseQuantity
         },
       },
       {
@@ -650,7 +659,7 @@ transferSchema.methods._updateWarehouseToWarehouseStock = async function (
 
   // Process each transfer line item
   for (const transferItem of this.lineItems) {
-    if (transferItem.quantity <= 0) continue;
+    if (transferItem.baseQuantity <= 0) continue;
 
     const batchNumber = transferItem.batchNumber || "__LEGACY__";
 
@@ -668,9 +677,9 @@ transferSchema.methods._updateWarehouseToWarehouseStock = async function (
     }
 
     const availableQty = warehouseStock.quantity || 0;
-    if (transferItem.quantity > availableQty) {
+    if (transferItem.baseQuantity > availableQty) {
       throw new Error(
-        `Transfer quantity (${transferItem.quantity}) exceeds available warehouse stock (${availableQty}) for inventory ${transferItem.inventoryId} (batch: ${batchNumber})`
+        `Transfer quantity (${transferItem.baseQuantity}) exceeds available warehouse stock (${availableQty}) for inventory ${transferItem.inventoryId} (batch: ${batchNumber})`
       );
     }
 
@@ -682,7 +691,7 @@ transferSchema.methods._updateWarehouseToWarehouseStock = async function (
         batchNumber: batchNumber,
       },
       {
-        $inc: { quantity: -transferItem.quantity }, // Negative to deduct
+        $inc: { quantity: -transferItem.baseQuantity }, // Negative to deduct
         $set: { lastUpdated: new Date() },
       },
       {
@@ -707,7 +716,7 @@ transferSchema.methods._updateWarehouseToWarehouseStock = async function (
         warehouseId: this.destinationWarehouseId,
       },
       {
-        $inc: { quantity: transferItem.quantity },
+        $inc: { quantity: transferItem.baseQuantity },
         $set: {
           lastUpdated: new Date(),
         },
@@ -717,7 +726,7 @@ transferSchema.methods._updateWarehouseToWarehouseStock = async function (
           batchNumber: batchNumber,
           expiryDate: expiryDate,
           manufacturingDate: manufacturingDate,
-          // quantity is handled by $inc - if document doesn't exist, $inc creates it with transferItem.quantity
+          // quantity is handled by $inc - if document doesn't exist, $inc creates it with transferItem.baseQuantity
         },
       },
       {
@@ -762,7 +771,7 @@ transferSchema.methods._updateStorefrontToWarehouseStock = async function (
 
   // Process each transfer line item
   for (const transferItem of this.lineItems) {
-    if (transferItem.quantity <= 0) continue;
+    if (transferItem.baseQuantity <= 0) continue;
 
     const batchNumber = transferItem.batchNumber || "__LEGACY__";
 
@@ -780,9 +789,9 @@ transferSchema.methods._updateStorefrontToWarehouseStock = async function (
     }
 
     const availableQty = storefrontStock.quantity || 0;
-    if (transferItem.quantity > availableQty) {
+    if (transferItem.baseQuantity > availableQty) {
       throw new Error(
-        `Transfer quantity (${transferItem.quantity}) exceeds available storefront stock (${availableQty}) for inventory ${transferItem.inventoryId} (batch: ${batchNumber})`
+        `Transfer quantity (${transferItem.baseQuantity}) exceeds available storefront stock (${availableQty}) for inventory ${transferItem.inventoryId} (batch: ${batchNumber})`
       );
     }
 
@@ -794,7 +803,7 @@ transferSchema.methods._updateStorefrontToWarehouseStock = async function (
         batchNumber: batchNumber,
       },
       {
-        $inc: { quantity: -transferItem.quantity }, // Negative to deduct
+        $inc: { quantity: -transferItem.baseQuantity }, // Negative to deduct
         $set: { lastUpdated: new Date() },
       },
       {
@@ -819,7 +828,7 @@ transferSchema.methods._updateStorefrontToWarehouseStock = async function (
         warehouseId: this.destinationWarehouseId,
       },
       {
-        $inc: { quantity: transferItem.quantity },
+        $inc: { quantity: transferItem.baseQuantity },
         $set: {
           lastUpdated: new Date(),
         },
@@ -829,7 +838,7 @@ transferSchema.methods._updateStorefrontToWarehouseStock = async function (
           batchNumber: batchNumber,
           expiryDate: expiryDate,
           manufacturingDate: manufacturingDate,
-          // quantity is handled by $inc - if document doesn't exist, $inc creates it with transferItem.quantity
+          // quantity is handled by $inc - if document doesn't exist, $inc creates it with transferItem.baseQuantity
         },
       },
       {
@@ -873,7 +882,7 @@ transferSchema.methods._updateStorefrontToStorefrontStock = async function (
 
   // Process each transfer line item
   for (const transferItem of this.lineItems) {
-    if (transferItem.quantity <= 0) continue;
+    if (transferItem.baseQuantity <= 0) continue;
 
     const batchNumber = transferItem.batchNumber || "__LEGACY__";
 
@@ -891,9 +900,9 @@ transferSchema.methods._updateStorefrontToStorefrontStock = async function (
     }
 
     const availableQty = storefrontStock.quantity || 0;
-    if (transferItem.quantity > availableQty) {
+    if (transferItem.baseQuantity > availableQty) {
       throw new Error(
-        `Transfer quantity (${transferItem.quantity}) exceeds available storefront stock (${availableQty}) for inventory ${transferItem.inventoryId} (batch: ${batchNumber})`
+        `Transfer quantity (${transferItem.baseQuantity}) exceeds available storefront stock (${availableQty}) for inventory ${transferItem.inventoryId} (batch: ${batchNumber})`
       );
     }
 
@@ -905,7 +914,7 @@ transferSchema.methods._updateStorefrontToStorefrontStock = async function (
         batchNumber: batchNumber,
       },
       {
-        $inc: { quantity: -transferItem.quantity }, // Negative to deduct
+        $inc: { quantity: -transferItem.baseQuantity }, // Negative to deduct
         $set: { lastUpdated: new Date() },
       },
       {
@@ -931,7 +940,7 @@ transferSchema.methods._updateStorefrontToStorefrontStock = async function (
         batchNumber: batchNumber,
       },
       {
-        $inc: { quantity: transferItem.quantity },
+        $inc: { quantity: transferItem.baseQuantity },
         $set: {
           lastUpdated: new Date(),
         },
@@ -941,7 +950,7 @@ transferSchema.methods._updateStorefrontToStorefrontStock = async function (
           batchNumber: batchNumber,
           expiryDate: expiryDate,
           manufacturingDate: manufacturingDate,
-          // quantity is handled by $inc - if document doesn't exist, $inc creates it with transferItem.quantity
+          // quantity is handled by $inc - if document doesn't exist, $inc creates it with transferItem.baseQuantity
         },
       },
       {

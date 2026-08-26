@@ -5,6 +5,7 @@ import LocationProfile from "../models/locationProfile.model.js";
 import WarehouseStock from "../models/warehouse.model.js";
 import StorefrontInventory from "../models/storefrontInventory.model.js";
 import Inventory from "../models/inventory.model.js";
+import { convertToBaseUnit } from "../utils/uom.utils.js";
 import { asyncErrorHandler } from "../utils/asyncErrorHandler.js";
 import CustomError from "../utils/customError.js";
 
@@ -251,6 +252,12 @@ export const createTransfer = asyncErrorHandler(async (req, res, next) => {
       );
     }
 
+    if (!userItem.transferUnit || typeof userItem.transferUnit !== "string" || userItem.transferUnit.trim() === "") {
+      return next(
+        new CustomError(400, "transferUnit is required for all line items")
+      );
+    }
+
     // Lookup inventory by productCode
     const inventory = await Inventory.findOne({
       productCode: userItem.productCode.toUpperCase(),
@@ -266,6 +273,14 @@ export const createTransfer = asyncErrorHandler(async (req, res, next) => {
     }
 
     const inventoryIdValue = inventory._id;
+
+    let baseQuantity;
+    try {
+      baseQuantity = convertToBaseUnit(inventory, userItem.transferUnit.trim(), userItem.quantity);
+    } catch (error) {
+      return next(new CustomError(400, error.message));
+    }
+
 
     // Validate based on transfer type
     if (transferSourceType === "GRN") {
@@ -307,11 +322,11 @@ export const createTransfer = asyncErrorHandler(async (req, res, next) => {
       const availableQuantity = goodQuantity - transferredQuantity;
 
       // Validate transfer quantity doesn't exceed available quantity
-      if (userItem.quantity > availableQuantity) {
+      if (baseQuantity > availableQuantity) {
         return next(
           new CustomError(
             400,
-            `Transfer quantity (${userItem.quantity}) exceeds available quantity (${availableQuantity}) for product '${userItem.productCode}'. Available quantity = goodQuantity (${goodQuantity}) - transferredQuantity (${transferredQuantity})`
+            `Transfer quantity (${baseQuantity} base units) exceeds available quantity (${availableQuantity}) for product '${userItem.productCode}'. Available quantity = goodQuantity (${goodQuantity}) - transferredQuantity (${transferredQuantity})`
           )
         );
       }
@@ -332,6 +347,8 @@ export const createTransfer = asyncErrorHandler(async (req, res, next) => {
         expiryDate,
         manufacturingDate,
         quantity: userItem.quantity,
+        transferUnit: userItem.transferUnit.trim(),
+        baseQuantity,
         grnLineItemId: grnLineItem._id, // Link to GRN line item for tracking
         notes: userItem.notes || null,
       });
@@ -355,11 +372,11 @@ export const createTransfer = asyncErrorHandler(async (req, res, next) => {
       }
 
       const availableQuantity = warehouseStock.quantity || 0;
-      if (userItem.quantity > availableQuantity) {
+      if (baseQuantity > availableQuantity) {
         return next(
           new CustomError(
             400,
-            `Transfer quantity (${userItem.quantity}) exceeds available warehouse stock (${availableQuantity}) for product '${userItem.productCode}' (batch: ${batchNumber})`
+            `Transfer quantity (${baseQuantity} base units) exceeds available warehouse stock (${availableQuantity}) for product '${userItem.productCode}' (batch: ${batchNumber})`
           )
         );
       }
@@ -378,6 +395,8 @@ export const createTransfer = asyncErrorHandler(async (req, res, next) => {
         expiryDate,
         manufacturingDate,
         quantity: userItem.quantity,
+        transferUnit: userItem.transferUnit.trim(),
+        baseQuantity,
         notes: userItem.notes || null,
         // No grnLineItemId for Warehouse → Storefront transfers
       });
@@ -533,10 +552,7 @@ export const createTransfer = asyncErrorHandler(async (req, res, next) => {
         "locationName locationCode"
       );
     }
-    await transfer.populate(
-      "lineItems.inventoryId",
-      "productName productCode SKU"
-    );
+    await transfer.populate("lineItems.inventoryId", "productName productCode SKU unitOfMeasure uomConversions");
     await transfer.populate("transferredBy", "name role");
 
     res.status(201).json({
@@ -689,6 +705,12 @@ export const transferWarehouseToWarehouse = asyncErrorHandler(
         );
       }
 
+    if (!userItem.transferUnit || typeof userItem.transferUnit !== "string" || userItem.transferUnit.trim() === "") {
+      return next(
+        new CustomError(400, "transferUnit is required for all line items")
+      );
+    }
+
       // Lookup inventory by productCode
       const inventory = await Inventory.findOne({
         productCode: userItem.productCode.toUpperCase(),
@@ -704,6 +726,14 @@ export const transferWarehouseToWarehouse = asyncErrorHandler(
       }
 
       const inventoryIdValue = inventory._id;
+
+    let baseQuantity;
+    try {
+      baseQuantity = convertToBaseUnit(inventory, userItem.transferUnit.trim(), userItem.quantity);
+    } catch (error) {
+      return next(new CustomError(400, error.message));
+    }
+
       const batchNumber = userItem.batchNumber.trim();
 
       // Requirement 2: Validate source warehouse has sufficient stock for this batch
@@ -723,11 +753,11 @@ export const transferWarehouseToWarehouse = asyncErrorHandler(
       }
 
       const availableQuantity = warehouseStock.quantity || 0;
-      if (userItem.quantity > availableQuantity) {
+      if (baseQuantity > availableQuantity) {
         return next(
           new CustomError(
             400,
-            `Insufficient stock for product '${userItem.productCode}' (batch: ${batchNumber}). Requested: ${userItem.quantity}, Available: ${availableQuantity}`
+            `Insufficient stock for product '${userItem.productCode}' (batch: ${batchNumber}). Requested: ${baseQuantity}, Available: ${availableQuantity}`
           )
         );
       }
@@ -746,6 +776,8 @@ export const transferWarehouseToWarehouse = asyncErrorHandler(
         expiryDate,
         manufacturingDate,
         quantity: userItem.quantity,
+        transferUnit: userItem.transferUnit.trim(),
+        baseQuantity,
         notes: userItem.notes || null,
       });
     }
@@ -794,10 +826,7 @@ export const transferWarehouseToWarehouse = asyncErrorHandler(
         "destinationWarehouseId",
         "locationName locationCode"
       );
-      await transfer.populate(
-        "lineItems.inventoryId",
-        "productName productCode SKU"
-      );
+      await transfer.populate("lineItems.inventoryId", "productName productCode SKU unitOfMeasure uomConversions");
       await transfer.populate("transferredBy", "name role");
 
       res.status(201).json({
@@ -953,6 +982,12 @@ export const transferStorefrontToWarehouse = asyncErrorHandler(
         );
       }
 
+      if (!userItem.transferUnit || typeof userItem.transferUnit !== "string" || userItem.transferUnit.trim() === "") {
+        return next(
+          new CustomError(400, "transferUnit is required for all line items")
+        );
+      }
+
       // Lookup inventory by productCode
       const inventory = await Inventory.findOne({
         productCode: userItem.productCode.toUpperCase(),
@@ -968,6 +1003,14 @@ export const transferStorefrontToWarehouse = asyncErrorHandler(
       }
 
       const inventoryIdValue = userItem.inventoryId || inventory._id;
+
+      let baseQuantity;
+      try {
+        baseQuantity = convertToBaseUnit(inventory, userItem.transferUnit.trim(), qty);
+      } catch (error) {
+        return next(new CustomError(400, error.message));
+      }
+
       const batchNumber = userItem.batchNumber.trim();
 
       // Validate source storefront has sufficient stock for this batch
@@ -987,11 +1030,11 @@ export const transferStorefrontToWarehouse = asyncErrorHandler(
       }
 
       const availableQuantity = storefrontStock.quantity || 0;
-      if (qty > availableQuantity) {
+      if (baseQuantity > availableQuantity) {
         return next(
           new CustomError(
             400,
-            `Insufficient stock for product '${userItem.productCode}' (batch: ${batchNumber}). Requested: ${qty}, Available: ${availableQuantity}`
+            `Insufficient stock for product '${userItem.productCode}' (batch: ${batchNumber}). Requested: ${baseQuantity}, Available: ${availableQuantity}`
           )
         );
       }
@@ -1010,6 +1053,8 @@ export const transferStorefrontToWarehouse = asyncErrorHandler(
         expiryDate,
         manufacturingDate,
         quantity: qty,
+        transferUnit: userItem.transferUnit.trim(),
+        baseQuantity,
         notes: userItem.notes || null,
       });
     }
@@ -1058,10 +1103,7 @@ export const transferStorefrontToWarehouse = asyncErrorHandler(
         "destinationWarehouseId",
         "locationName locationCode"
       );
-      await transfer.populate(
-        "lineItems.inventoryId",
-        "productName productCode SKU"
-      );
+      await transfer.populate("lineItems.inventoryId", "productName productCode SKU unitOfMeasure uomConversions");
       await transfer.populate("transferredBy", "name role");
 
       res.status(201).json({
@@ -1217,6 +1259,12 @@ export const transferWarehouseToStorefront = asyncErrorHandler(
         );
       }
 
+      if (!userItem.transferUnit || typeof userItem.transferUnit !== "string" || userItem.transferUnit.trim() === "") {
+        return next(
+          new CustomError(400, "transferUnit is required for all line items")
+        );
+      }
+
       // Lookup inventory by productCode
       const inventory = await Inventory.findOne({
         productCode: userItem.productCode.toUpperCase(),
@@ -1232,6 +1280,14 @@ export const transferWarehouseToStorefront = asyncErrorHandler(
       }
 
       const inventoryIdValue = userItem.inventoryId || inventory._id;
+
+      let baseQuantity;
+      try {
+        baseQuantity = convertToBaseUnit(inventory, userItem.transferUnit.trim(), qty);
+      } catch (error) {
+        return next(new CustomError(400, error.message));
+      }
+
       const batchNumber = userItem.batchNumber.trim();
 
       // Validate source warehouse has sufficient stock for this batch
@@ -1251,11 +1307,11 @@ export const transferWarehouseToStorefront = asyncErrorHandler(
       }
 
       const availableQuantity = warehouseStock.quantity || 0;
-      if (qty > availableQuantity) {
+      if (baseQuantity > availableQuantity) {
         return next(
           new CustomError(
             400,
-            `Insufficient stock for product '${userItem.productCode}' (batch: ${batchNumber}). Requested: ${qty}, Available: ${availableQuantity}`
+            `Insufficient stock for product '${userItem.productCode}' (batch: ${batchNumber}). Requested: ${baseQuantity}, Available: ${availableQuantity}`
           )
         );
       }
@@ -1274,6 +1330,8 @@ export const transferWarehouseToStorefront = asyncErrorHandler(
         expiryDate,
         manufacturingDate,
         quantity: qty,
+        transferUnit: userItem.transferUnit.trim(),
+        baseQuantity,
         notes: userItem.notes || null,
       });
     }
@@ -1322,10 +1380,7 @@ export const transferWarehouseToStorefront = asyncErrorHandler(
         "destinationStorefrontId",
         "locationName locationCode"
       );
-      await transfer.populate(
-        "lineItems.inventoryId",
-        "productName productCode SKU"
-      );
+      await transfer.populate("lineItems.inventoryId", "productName productCode SKU unitOfMeasure uomConversions");
       await transfer.populate("transferredBy", "name role");
 
       res.status(201).json({
@@ -1489,6 +1544,12 @@ export const transferStorefrontToStorefront = asyncErrorHandler(
         );
       }
 
+      if (!userItem.transferUnit || typeof userItem.transferUnit !== "string" || userItem.transferUnit.trim() === "") {
+        return next(
+          new CustomError(400, "transferUnit is required for all line items")
+        );
+      }
+
       // Lookup inventory by productCode
       const inventory = await Inventory.findOne({
         productCode: userItem.productCode.toUpperCase(),
@@ -1504,6 +1565,14 @@ export const transferStorefrontToStorefront = asyncErrorHandler(
       }
 
       const inventoryIdValue = userItem.inventoryId || inventory._id;
+
+      let baseQuantity;
+      try {
+        baseQuantity = convertToBaseUnit(inventory, userItem.transferUnit.trim(), qty);
+      } catch (error) {
+        return next(new CustomError(400, error.message));
+      }
+
       const batchNumber = userItem.batchNumber.trim();
 
       // Validate source storefront has sufficient stock for this batch
@@ -1523,11 +1592,11 @@ export const transferStorefrontToStorefront = asyncErrorHandler(
       }
 
       const availableQuantity = storefrontStock.quantity || 0;
-      if (qty > availableQuantity) {
+      if (baseQuantity > availableQuantity) {
         return next(
           new CustomError(
             400,
-            `Insufficient stock for product '${userItem.productCode}' (batch: ${batchNumber}). Requested: ${qty}, Available: ${availableQuantity}`
+            `Insufficient stock for product '${userItem.productCode}' (batch: ${batchNumber}). Requested: ${baseQuantity}, Available: ${availableQuantity}`
           )
         );
       }
@@ -1546,6 +1615,8 @@ export const transferStorefrontToStorefront = asyncErrorHandler(
         expiryDate,
         manufacturingDate,
         quantity: qty,
+        transferUnit: userItem.transferUnit.trim(),
+        baseQuantity,
         notes: userItem.notes || null,
       });
     }
@@ -1594,10 +1665,7 @@ export const transferStorefrontToStorefront = asyncErrorHandler(
         "destinationStorefrontId",
         "locationName locationCode"
       );
-      await transfer.populate(
-        "lineItems.inventoryId",
-        "productName productCode SKU"
-      );
+      await transfer.populate("lineItems.inventoryId", "productName productCode SKU unitOfMeasure uomConversions");
       await transfer.populate("transferredBy", "name role");
 
       res.status(201).json({
@@ -1623,7 +1691,7 @@ export const transferStorefrontToStorefront = asyncErrorHandler(
 export const getTransfers = asyncErrorHandler(async (req, res, next) => {
   const transfers = await Transfer.find()
     .populate("transferredBy", "name role")
-    .populate("lineItems.inventoryId", "productName productCode SKU")
+    .populate("lineItems.inventoryId", "productName productCode SKU unitOfMeasure uomConversions")
     .populate("destinationWarehouseId", "locationName locationCode")
     .populate("destinationStorefrontId", "locationName locationCode")
     .lean();
@@ -1641,7 +1709,7 @@ export const getTransferById = asyncErrorHandler(async (req, res, next) => {
   const { id } = req.params;
   const transfer = await Transfer.findById(id)
     .populate("transferredBy", "name role")
-    .populate("lineItems.inventoryId", "productName productCode SKU");
+    .populate("lineItems.inventoryId", "productName productCode SKU unitOfMeasure uomConversions");
 
   if (!transfer) {
     return next(new CustomError(404, "Transfer not found"));
@@ -1743,8 +1811,7 @@ export const updateTransferStatus = asyncErrorHandler(
         );
       }
       await updatedTransfer.populate(
-        "lineItems.inventoryId",
-        "productName productCode SKU"
+        "lineItems.inventoryId", "productName productCode SKU unitOfMeasure uomConversions"
       );
       await updatedTransfer.populate("transferredBy", "name role");
 
