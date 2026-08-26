@@ -3,6 +3,7 @@ import Purchasing from "../models/purchasing.model.js";
 import { asyncErrorHandler } from "../utils/asyncErrorHandler.js";
 import CustomError from "../utils/customError.js";
 import Inventory from "../models/inventory.model.js";
+import Supplier from "../models/supplierProfile.model.js";
 import { createDateFilter } from "../utils/dateFilter.utils.js";
 
 export const createPurchase = asyncErrorHandler(async (req, res, next) => {
@@ -668,6 +669,202 @@ export const removePurchaseItem = asyncErrorHandler(async (req, res, next) => {
   res.status(200).json({
     success: true,
     message: "Item removed from purchase order successfully",
+    data: purchase,
+  });
+});
+
+// Update the entire purchase order (PATCH)
+export const updateWholePurchase = asyncErrorHandler(async (req, res, next) => {
+  const { id } = req.params;
+  const { supplierId, note, paymentType, paidAmount, dueDate, products } = req.body;
+
+  // Validate MongoDB ObjectId format
+  if (!mongoose.Types.ObjectId.isValid(id)) {
+    return next(new CustomError(400, "Invalid purchase order ID format"));
+  }
+
+  // Find existing PO
+  const purchase = await Purchasing.findOne({ _id: id, isDeleted: false });
+  if (!purchase) {
+    return next(new CustomError(400, "Purchase order not found"));
+  }
+
+  // Check if status is pending
+  if (purchase.status !== "pending") {
+    return next(
+      new CustomError(
+        400,
+        `Cannot edit a purchase order with status '${purchase.status}'. Only 'pending' POs can be edited.`
+      )
+    );
+  }
+
+  // Validate Supplier if provided
+  if (supplierId) {
+    const supplier = await Supplier.findById(supplierId);
+    if (!supplier) {
+      return next(new CustomError(400, "Supplier not found"));
+    }
+    purchase.supplierId = supplierId;
+  }
+
+  // Update simple fields
+  if (note !== undefined) purchase.note = note;
+
+  // Process and validate products if provided
+  if (products && Array.isArray(products)) {
+    // Collect incoming products map for quick lookup
+    const incomingProductsMap = new Map();
+    products.forEach((p) => {
+      if (p.inventoryId) incomingProductsMap.set(p.inventoryId.toString(), p);
+    });
+
+    // Check STRICT RULE: existing products
+    for (const existingItem of purchase.products) {
+      const received = existingItem.receivedQuantity || 0;
+      if (received > 0) {
+        const incomingItem = incomingProductsMap.get(existingItem.inventoryId.toString());
+        // 1. Cannot completely remove it
+        if (!incomingItem) {
+          return next(
+            new CustomError(
+              400,
+              `Cannot remove product '${existingItem.productName}' as it has already been partially received (${received} received).`
+            )
+          );
+        }
+        // 2. New purchaseQuantity MUST NOT be less than receivedQuantity
+        if (incomingItem.purchaseQuantity < received) {
+          return next(
+            new CustomError(
+              400,
+              `Cannot set purchase quantity for product '${existingItem.productName}' (${incomingItem.purchaseQuantity}) below already received quantity (${received}).`
+            )
+          );
+        }
+      }
+    }
+
+    // Extract all inventory IDs for batch fetching
+    const inventoryIds = products.map((item) => {
+      if (!item.inventoryId || item.purchaseQuantity === undefined) {
+        throw new CustomError(
+          400,
+          `Product must have inventoryId and purchaseQuantity`
+        );
+      }
+      return item.inventoryId;
+    });
+
+    // Batch fetch all inventory items
+    const inventoryItems = await Inventory.find({ _id: { $in: inventoryIds } }).lean();
+    const inventoryMap = new Map(
+      inventoryItems.map((item) => [item._id.toString(), item])
+    );
+
+    let calculatedTotalAmount = 0;
+
+    // Build the new products array
+    const productsWithDetails = products.map((item) => {
+      const inventoryItem = inventoryMap.get(item.inventoryId.toString());
+      if (!inventoryItem) {
+        throw new CustomError(
+          404,
+          `Product with ID ${item.inventoryId} not found in inventory`
+        );
+      }
+
+      // UOM Validation
+      if (!item.purchaseUnit) {
+        throw new CustomError(
+          400,
+          `purchaseUnit is required for product '${inventoryItem.productName}'`
+        );
+      }
+      const purchaseUnit = item.purchaseUnit;
+      const baseUnit = (inventoryItem.unitOfMeasure || inventoryItem.uom || "").trim().toLowerCase();
+
+      // Build set of valid units
+      const validUnits = new Set([baseUnit]);
+      if (inventoryItem.uomConversions && Array.isArray(inventoryItem.uomConversions)) {
+        inventoryItem.uomConversions.forEach((conv) => {
+          if (conv.unit) validUnits.add(conv.unit.trim().toLowerCase());
+        });
+      }
+
+      const providedUnitLower = purchaseUnit.trim().toLowerCase();
+      if (!validUnits.has(providedUnitLower)) {
+        throw new CustomError(
+          400,
+          `Invalid purchase unit '${purchaseUnit}' provided for product '${inventoryItem.productName}'. Valid units are: ${Array.from(validUnits).join(", ")}`
+        );
+      }
+
+      if (item.purchaseUnitPrice === undefined || item.purchaseUnitPrice === null) {
+        throw new CustomError(
+          400,
+          `purchaseUnitPrice is required for product '${inventoryItem.productName}'`
+        );
+      }
+      const purchaseUnitPrice = item.purchaseUnitPrice;
+      if (purchaseUnitPrice < 0) {
+        throw new CustomError(
+          400,
+          `Purchase unit price cannot be negative for product '${inventoryItem.productName}'`
+        );
+      }
+
+      if (item.purchaseQuantity <= 0) {
+         throw new CustomError(
+           400,
+           `Purchase quantity must be greater than zero for product '${inventoryItem.productName}'`
+         );
+      }
+
+      // Calculate item total
+      const itemTotal = item.purchaseQuantity * purchaseUnitPrice;
+      calculatedTotalAmount += itemTotal;
+
+      // Find if this product was already in the PO to retain receivedQuantity and _id if possible
+      const existingProduct = purchase.products.find(
+        (p) => p.inventoryId.toString() === item.inventoryId.toString()
+      );
+
+      return {
+        _id: existingProduct ? existingProduct._id : undefined, // retain subdocument ID if it exists
+        inventoryId: inventoryItem._id,
+        productName: inventoryItem.productName,
+        productCode: inventoryItem.productCode,
+        buyingPrice: inventoryItem.buyingPrice,
+        purchaseQuantity: item.purchaseQuantity,
+        purchaseUnit,
+        purchaseUnitPrice,
+        receivedQuantity: existingProduct ? existingProduct.receivedQuantity || 0 : 0,
+      };
+    });
+
+    purchase.products = productsWithDetails;
+    purchase.totalAmount = calculatedTotalAmount;
+  }
+
+  // Handle payment logic
+  if (paymentType !== undefined) {
+    purchase.paymentType = paymentType;
+  }
+  
+  if (purchase.paymentType === "paid") {
+    purchase.paidAmount = purchase.totalAmount;
+    purchase.dueDate = null;
+  } else if (purchase.paymentType === "credit") {
+    if (paidAmount !== undefined) purchase.paidAmount = paidAmount;
+    if (dueDate !== undefined) purchase.dueDate = dueDate;
+  }
+
+  await purchase.save();
+
+  res.status(200).json({
+    success: true,
+    message: "Purchase order updated successfully",
     data: purchase,
   });
 });

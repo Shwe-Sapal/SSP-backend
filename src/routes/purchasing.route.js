@@ -10,6 +10,7 @@ import {
   hardDeletePurchase,
   addPurchaseItem,
   removePurchaseItem,
+  updateWholePurchase,
 } from "../controllers/purchase.controller.js";
 import {
   createSupplierPayment,
@@ -41,6 +42,12 @@ router.get(
   protect,
   permissionGranted("owner", "admin"),
   getPurchaseById
+);
+router.patch(
+  "/purchase/:id",
+  protect,
+  permissionGranted("owner", "admin"),
+  updateWholePurchase
 );
 router.patch(
   "/purchase/:id/status",
