@@ -103,7 +103,7 @@ export const createStorefrontInventory = asyncErrorHandler(
             storefrontId,
             quantity,
           });
-          await record.populate("inventoryId", "productName productCode wholesalePrices");
+          await record.populate("inventoryId", "productName productCode wholesalePrices uomConversions");
           await record.populate("storefrontId", "locationName locationCode");
           return { status: "created", record };
         } catch (error) {
@@ -117,7 +117,7 @@ export const createStorefrontInventory = asyncErrorHandler(
             if (existingRecord) {
               await existingRecord.populate(
                 "inventoryId",
-                "productName productCode",
+                "productName productCode uomConversions",
               );
               await existingRecord.populate(
                 "storefrontId",
@@ -155,7 +155,7 @@ export const createStorefrontInventory = asyncErrorHandler(
     // Populate existing records for response (if not already populated)
     for (const record of existingRecords) {
       if (!record.populated("inventoryId")) {
-        await record.populate("inventoryId", "productName productCode wholesalePrices");
+        await record.populate("inventoryId", "productName productCode wholesalePrices uomConversions");
         await record.populate("storefrontId", "locationName locationCode");
       }
     }
@@ -287,6 +287,7 @@ export const getAllStorefrontInventory = asyncErrorHandler(
           "inventoryId.wholesalePrices": 1,
           "inventoryId.barcode": 1,
           "inventoryId.status": 1,
+          "inventoryId.uomConversions": 1,
           "storefrontId._id": 1,
           "storefrontId.locationName": 1,
           "storefrontId.locationCode": 1,
@@ -405,7 +406,7 @@ export const getStorefrontInventoryById = asyncErrorHandler(
     const stock = await StorefrontInventory.findById(id)
       .populate(
         "inventoryId",
-        "productName productCode SKU category buyingPrice sellingPrice wholesalePrices barcode status",
+        "productName productCode SKU category buyingPrice sellingPrice wholesalePrices barcode status uomConversions",
       )
       .populate("storefrontId", "locationName locationCode locationAddress");
 
@@ -465,7 +466,7 @@ export const updateStorefrontInventoryQuantity = asyncErrorHandler(
       // Find the stock before the update to get the current quantity
       // Populate inventoryId to get product name for error messages
       const stockToUpdate = await StorefrontInventory.findById(id)
-        .populate("inventoryId", "productName productCode SKU wholesalePrices")
+        .populate("inventoryId", "productName productCode SKU wholesalePrices uomConversions")
         .populate("storefrontId", "locationName locationCode type")
         .session(session);
 
@@ -515,7 +516,7 @@ export const updateStorefrontInventoryQuantity = asyncErrorHandler(
       )
         .populate(
           "inventoryId",
-          "productName productCode SKU category wholesalePrices barcode status",
+          "productName productCode SKU category wholesalePrices barcode status uomConversions",
         )
         .populate("storefrontId", "locationName locationCode");
 

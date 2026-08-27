@@ -103,7 +103,7 @@ export const createWarehouseStock = asyncErrorHandler(
             warehouseId,
             quantity,
           });
-          await record.populate("inventoryId", "productName productCode");
+          await record.populate("inventoryId", "productName productCode uomConversions");
           await record.populate("warehouseId", "locationName locationCode");
           return { status: "created", record };
         } catch (error) {
@@ -117,7 +117,7 @@ export const createWarehouseStock = asyncErrorHandler(
             if (existingRecord) {
               await existingRecord.populate(
                 "inventoryId",
-                "productName productCode",
+                "productName productCode uomConversions",
               );
               await existingRecord.populate(
                 "warehouseId",
@@ -155,7 +155,7 @@ export const createWarehouseStock = asyncErrorHandler(
     // Populate existing records for response (if not already populated)
     for (const record of existingRecords) {
       if (!record.populated("inventoryId")) {
-        await record.populate("inventoryId", "productName productCode");
+        await record.populate("inventoryId", "productName productCode uomConversions");
         await record.populate("warehouseId", "locationName locationCode");
       }
     }
@@ -278,6 +278,7 @@ export const getAllWarehouseStock = asyncErrorHandler(
           "inventoryId.sellingPrice": 1,
           "inventoryId.barcode": 1,
           "inventoryId.status": 1,
+          "inventoryId.uomConversions": 1,
           "warehouseId._id": 1,
           "warehouseId.locationName": 1,
           "warehouseId.locationCode": 1,
@@ -392,7 +393,7 @@ export const getWarehouseStockById = asyncErrorHandler(
     const stock = await WarehouseStock.findById(id)
       .populate(
         "inventoryId",
-        "productName productCode SKU category buyingPrice sellingPrice barcode status",
+        "productName productCode SKU category buyingPrice sellingPrice barcode status uomConversions",
       )
       .populate("warehouseId", "locationName locationCode locationAddress");
 
@@ -450,7 +451,7 @@ export const updateWarehouseStockQuantity = asyncErrorHandler(
       // Find the stock before the update to get the current quantity
       // Populate inventoryId and warehouseId for validation and error messages
       const stockToUpdate = await WarehouseStock.findById(id)
-        .populate("inventoryId", "productName productCode SKU barcode")
+        .populate("inventoryId", "productName productCode SKU barcode uomConversions")
         .populate("warehouseId", "locationName locationCode type isDeleted")
         .session(session);
 
@@ -500,7 +501,7 @@ export const updateWarehouseStockQuantity = asyncErrorHandler(
       )
         .populate(
           "inventoryId",
-          "productName productCode SKU category barcode status",
+          "productName productCode SKU category barcode status uomConversions",
         )
         .populate("warehouseId", "locationName locationCode");
 
