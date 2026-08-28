@@ -252,6 +252,8 @@ export const createOrder = asyncErrorHandler(async (req, res, next) => {
             validatedProducts.push({
               inventoryId,
               quantity: product.quantity,
+              saleUnit: product.saleUnit || "piece",
+              conversionFactor: product.conversionFactor || 1,
               unitPrice, // Snapshot of current selling price
               buyingPrice: inventoryItem.buyingPrice || 0, // Snapshot of current buying price
             });
@@ -296,9 +298,12 @@ export const createOrder = asyncErrorHandler(async (req, res, next) => {
               );
             }
 
+            // Apply conversion factor for base quantity deduction
+            const baseQtyToDeduct = product.quantity * (product.conversionFactor || 1);
+
             // Check stock availability
             const availableQuantity = stockRecord.quantity || 0;
-            if (availableQuantity < product.quantity) {
+            if (availableQuantity < baseQtyToDeduct) {
               const inventoryItem = inventoryMap.get(
                 product.inventoryId.toString(),
               );
@@ -308,15 +313,13 @@ export const createOrder = asyncErrorHandler(async (req, res, next) => {
                   inventoryItem?.productCode || product.inventoryId
                 }' (${
                   inventoryItem?.productName || "Unknown"
-                }). Available: ${availableQuantity}, Requested: ${
-                  product.quantity
-                }`,
+                }). Available: ${availableQuantity}, Requested: ${baseQtyToDeduct} (Base Quantity)`,
               );
             }
 
             // Deduct stock - modify document directly and save with session
             // This follows the pattern in StorefrontInventory model's removeStock method
-            stockRecord.quantity -= product.quantity;
+            stockRecord.quantity -= baseQtyToDeduct;
             stockRecord.lastUpdated = new Date();
             await stockRecord.save({ session });
           }
@@ -939,11 +942,12 @@ export const addOrderItems = asyncErrorHandler(async (req, res, next) => {
         }
 
         // Check stock availability - stock must be >= quantity to add
+        const baseQtyToDeductCheck = item.quantity * (item.conversionFactor || 1);
         const availableQuantity = stockRecord.quantity || 0;
-        if (availableQuantity < item.quantity) {
+        if (availableQuantity < baseQtyToDeductCheck) {
           throw new CustomError(
             400,
-            `Insufficient stock for product '${inventoryItem.productCode}' (${inventoryItem.productName}). Available: ${availableQuantity}, Requested: ${item.quantity}`,
+            `Insufficient stock for product '${inventoryItem.productCode}' (${inventoryItem.productName}). Available: ${availableQuantity}, Requested: ${baseQtyToDeductCheck} (Base Quantity)`,
           );
         }
 
@@ -963,11 +967,14 @@ export const addOrderItems = asyncErrorHandler(async (req, res, next) => {
         }
         const stockRecord = stockRecordsMap.get(inventoryId.toString());
 
-        // Check if item already exists in order
+        // Check if item already exists in order with the same unit
         const existingItemIndex = order.ordersProducts.findIndex(
           (orderItem) =>
-            orderItem.inventoryId.toString() === inventoryId.toString(),
+            orderItem.inventoryId.toString() === inventoryId.toString() &&
+            (orderItem.saleUnit || "piece") === (item.saleUnit || "piece"),
         );
+
+        const baseQtyToDeduct = item.quantity * (item.conversionFactor || 1);
 
         if (existingItemIndex !== -1) {
           // Item exists, increase quantity
@@ -977,13 +984,15 @@ export const addOrderItems = asyncErrorHandler(async (req, res, next) => {
           order.ordersProducts.push({
             inventoryId: inventoryId,
             quantity: item.quantity,
+            saleUnit: item.saleUnit || "piece",
+            conversionFactor: item.conversionFactor || 1,
             unitPrice,
             buyingPrice: inventoryItem.buyingPrice || 0, // Snapshot of current buying price
           });
         }
 
         // Deduct stock
-        stockRecord.quantity -= item.quantity;
+        stockRecord.quantity -= baseQtyToDeduct;
         stockRecord.lastUpdated = new Date();
         await stockRecord.save({ session });
       }
@@ -1161,7 +1170,8 @@ export const removeOrderItems = asyncErrorHandler(async (req, res, next) => {
         const inventoryId = new mongoose.Types.ObjectId(item.inventoryId);
         const existingItemIndex = order.ordersProducts.findIndex(
           (orderItem) =>
-            orderItem.inventoryId.toString() === inventoryId.toString(),
+            orderItem.inventoryId.toString() === inventoryId.toString() &&
+            (orderItem.saleUnit || "piece") === (item.saleUnit || "piece"),
         );
 
         if (existingItemIndex === -1) {
@@ -1222,6 +1232,8 @@ export const removeOrderItems = asyncErrorHandler(async (req, res, next) => {
           { session },
         );
 
+        const baseQtyToRestore = quantity * (existingItem.conversionFactor || 1);
+
         if (!stockRecord) {
           // If stock record doesn't exist, create it
           // This should rarely happen as stock records are created when orders are made
@@ -1231,7 +1243,7 @@ export const removeOrderItems = asyncErrorHandler(async (req, res, next) => {
               {
                 inventoryId: inventoryId,
                 storefrontId: order.storefrontId,
-                quantity: quantity,
+                quantity: baseQtyToRestore,
                 lastUpdated: new Date(),
               },
             ],
@@ -1239,7 +1251,7 @@ export const removeOrderItems = asyncErrorHandler(async (req, res, next) => {
           );
         } else {
           // Restore stock to existing record
-          stockRecord.quantity += quantity;
+          stockRecord.quantity += baseQtyToRestore;
           stockRecord.lastUpdated = new Date();
           await stockRecord.save({ session });
         }

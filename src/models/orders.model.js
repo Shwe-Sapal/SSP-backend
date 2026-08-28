@@ -11,6 +11,14 @@ const orderProductsSchema = new mongoose.Schema({
     required: [true, "Quantity is required"],
     min: [1, "Quantity must be at least 1"],
   },
+  saleUnit: {
+    type: String,
+    default: "piece",
+  },
+  conversionFactor: {
+    type: Number,
+    default: 1,
+  },
   unitPrice: {
     type: Number,
     required: [true, "Unit price is required"],
