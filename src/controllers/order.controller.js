@@ -8,6 +8,7 @@ import CreditRecord from "../models/creditRecord.model.js";
 import { asyncErrorHandler } from "../utils/asyncErrorHandler.js";
 import CustomError from "../utils/customError.js";
 import { createDateFilter } from "../utils/dateFilter.utils.js";
+import { getEffectiveBaseFactor } from "../utils/uom.utils.js";
 
 // Create new order with ACID properties and stock deduction
 export const createOrder = asyncErrorHandler(async (req, res, next) => {
@@ -180,22 +181,22 @@ export const createOrder = asyncErrorHandler(async (req, res, next) => {
           }
 
           // 2. Validate all inventory items exist and get their selling prices
-          const inventoryIds = ordersProducts.map(
-            (p) => new mongoose.Types.ObjectId(p.inventoryId),
-          );
+          const uniqueInventoryIds = [
+            ...new Set(ordersProducts.map((p) => p.inventoryId.toString())),
+          ].map((id) => new mongoose.Types.ObjectId(id));
 
           const inventoryItems = await Inventory.find({
-            _id: { $in: inventoryIds },
+            _id: { $in: uniqueInventoryIds },
           }).session(session);
 
-          if (inventoryItems.length !== inventoryIds.length) {
+          if (inventoryItems.length !== uniqueInventoryIds.length) {
             const foundIds = inventoryItems.map((item) => item._id.toString());
-            const missingIds = inventoryIds.filter(
+            const missingIds = uniqueInventoryIds.filter(
               (id) => !foundIds.includes(id.toString()),
             );
             throw new CustomError(
               404,
-              `Inventory items not found: ${missingIds.join(", ")}`,
+              `Inventory items not found: ${missingIds.map(id => id.toString()).join(", ")}`,
             );
           }
 
@@ -249,11 +250,17 @@ export const createOrder = asyncErrorHandler(async (req, res, next) => {
             const productSubTotal = product.quantity * unitPrice;
             calculatedSubTotal += productSubTotal;
 
+            const computedFactor = getEffectiveBaseFactor(
+              product.saleUnit || "piece",
+              inventoryItem.uomConversions || [],
+              inventoryItem.unitOfMeasure || inventoryItem.uom || ""
+            );
+
             validatedProducts.push({
               inventoryId,
               quantity: product.quantity,
               saleUnit: product.saleUnit || "piece",
-              conversionFactor: product.conversionFactor || 1,
+              conversionFactor: computedFactor,
               unitPrice, // Snapshot of current selling price
               buyingPrice: inventoryItem.buyingPrice || 0, // Snapshot of current buying price
             });
@@ -275,11 +282,23 @@ export const createOrder = asyncErrorHandler(async (req, res, next) => {
             throw new CustomError(400, "Final amount cannot be negative");
           }
 
-          // 4. Validate stock availability and deduct stock
+          // 4. Aggregate required quantities for validation
+          const aggregatedQuantities = new Map();
           for (const product of validatedProducts) {
+            const idStr = product.inventoryId.toString();
+            const baseQty = product.quantity * (product.conversionFactor || 1);
+            if (aggregatedQuantities.has(idStr)) {
+              aggregatedQuantities.set(idStr, aggregatedQuantities.get(idStr) + baseQty);
+            } else {
+              aggregatedQuantities.set(idStr, baseQty);
+            }
+          }
+
+          // 5. Validate stock availability and deduct stock
+          for (const [inventoryIdStr, totalBaseQty] of aggregatedQuantities.entries()) {
             const stockRecord = await StorefrontInventory.findOne(
               {
-                inventoryId: product.inventoryId,
+                inventoryId: new mongoose.Types.ObjectId(inventoryIdStr),
                 storefrontId: storefrontId,
               },
               null,
@@ -287,44 +306,36 @@ export const createOrder = asyncErrorHandler(async (req, res, next) => {
             );
 
             if (!stockRecord) {
-              const inventoryItem = inventoryMap.get(
-                product.inventoryId.toString(),
-              );
+              const inventoryItem = inventoryMap.get(inventoryIdStr);
               throw new CustomError(
                 404,
                 `Stock record not found for product '${
-                  inventoryItem?.productCode || product.inventoryId
+                  inventoryItem?.productCode || inventoryIdStr
                 }' in storefront`,
               );
             }
 
-            // Apply conversion factor for base quantity deduction
-            const baseQtyToDeduct = product.quantity * (product.conversionFactor || 1);
-
             // Check stock availability
             const availableQuantity = stockRecord.quantity || 0;
-            if (availableQuantity < baseQtyToDeduct) {
-              const inventoryItem = inventoryMap.get(
-                product.inventoryId.toString(),
-              );
+            if (availableQuantity < totalBaseQty) {
+              const inventoryItem = inventoryMap.get(inventoryIdStr);
               throw new CustomError(
                 400,
                 `Insufficient stock for product '${
-                  inventoryItem?.productCode || product.inventoryId
+                  inventoryItem?.productCode || inventoryIdStr
                 }' (${
                   inventoryItem?.productName || "Unknown"
-                }). Available: ${availableQuantity}, Requested: ${baseQtyToDeduct} (Base Quantity)`,
+                }). Available: ${availableQuantity}, Requested: ${totalBaseQty} (Base Quantity)`,
               );
             }
 
             // Deduct stock - modify document directly and save with session
-            // This follows the pattern in StorefrontInventory model's removeStock method
-            stockRecord.quantity -= baseQtyToDeduct;
+            stockRecord.quantity -= totalBaseQty;
             stockRecord.lastUpdated = new Date();
             await stockRecord.save({ session });
           }
 
-          // 5. Create order with calculated values
+          // 6. Create order with calculated values
           const orderData = {
             orderNumber,
             storefrontId: new mongoose.Types.ObjectId(storefrontId),
@@ -942,7 +953,12 @@ export const addOrderItems = asyncErrorHandler(async (req, res, next) => {
         }
 
         // Check stock availability - stock must be >= quantity to add
-        const baseQtyToDeductCheck = item.quantity * (item.conversionFactor || 1);
+        const computedFactorCheck = getEffectiveBaseFactor(
+          item.saleUnit || "piece",
+          inventoryItem.uomConversions || [],
+          inventoryItem.unitOfMeasure || inventoryItem.uom || ""
+        );
+        const baseQtyToDeductCheck = item.quantity * computedFactorCheck;
         const availableQuantity = stockRecord.quantity || 0;
         if (availableQuantity < baseQtyToDeductCheck) {
           throw new CustomError(
@@ -974,7 +990,12 @@ export const addOrderItems = asyncErrorHandler(async (req, res, next) => {
             (orderItem.saleUnit || "piece") === (item.saleUnit || "piece"),
         );
 
-        const baseQtyToDeduct = item.quantity * (item.conversionFactor || 1);
+        const computedFactor = getEffectiveBaseFactor(
+          item.saleUnit || "piece",
+          inventoryItem.uomConversions || [],
+          inventoryItem.unitOfMeasure || inventoryItem.uom || ""
+        );
+        const baseQtyToDeduct = item.quantity * computedFactor;
 
         if (existingItemIndex !== -1) {
           // Item exists, increase quantity
@@ -985,7 +1006,7 @@ export const addOrderItems = asyncErrorHandler(async (req, res, next) => {
             inventoryId: inventoryId,
             quantity: item.quantity,
             saleUnit: item.saleUnit || "piece",
-            conversionFactor: item.conversionFactor || 1,
+            conversionFactor: computedFactor,
             unitPrice,
             buyingPrice: inventoryItem.buyingPrice || 0, // Snapshot of current buying price
           });

@@ -10,34 +10,25 @@
 // Internal helper
 // ---------------------------------------------------------------------------
 
-/**
- * Resolve the effective conversion factor for a given unit.
- *
- * @param {Array<{ unit: string, factor: number }>} conversions
- *   The product's `uomConversions` array.
- * @param {string} baseUnit
- *   The product's base unit of measure (e.g. "piece").
- * @param {string} selectedUnit
- *   The unit the caller wants to convert FROM.
- * @returns {number} The multiplication factor to apply to the quantity.
- * @throws {Error} If no matching conversion entry is found.
- */
-function getEffectiveFactor(conversions, baseUnit, selectedUnit) {
-  const normalizedSelectedUnit = selectedUnit ? String(selectedUnit).toLowerCase().trim() : "";
-  const normalizedBaseUnit = baseUnit ? String(baseUnit).toLowerCase().trim() : "";
+export function getEffectiveBaseFactor(targetUnit, conversions, baseUnit) {
+  const normalizedTarget = targetUnit ? String(targetUnit).toLowerCase().trim() : "";
+  const normalizedBase = baseUnit ? String(baseUnit).toLowerCase().trim() : "";
 
-  // When the selected unit already IS the base unit, no conversion is needed.
-  if (normalizedSelectedUnit === normalizedBaseUnit) return 1;
+  if (!normalizedTarget || normalizedTarget === normalizedBase) return 1;
 
-  // Attempt to locate a matching conversion entry (case-insensitive match).
-  const entry = conversions.find(
-    (conv) => conv.unit && String(conv.unit).toLowerCase().trim() === normalizedSelectedUnit
+  const conversion = conversions.find(
+    (conv) => conv.unit && String(conv.unit).toLowerCase().trim() === normalizedTarget
   );
 
-  if (entry) return entry.factor;
+  if (!conversion) return 1;
 
-  // No match — surface a clear, actionable error.
-  throw new Error(`Conversion not found for unit: ${selectedUnit}`);
+  const normalizedConvertFrom = conversion.convertFrom ? String(conversion.convertFrom).toLowerCase().trim() : "";
+
+  if (!normalizedConvertFrom || normalizedConvertFrom === normalizedBase) {
+    return conversion.factor;
+  }
+
+  return conversion.factor * getEffectiveBaseFactor(conversion.convertFrom, conversions, baseUnit);
 }
 
 // ---------------------------------------------------------------------------
@@ -77,7 +68,7 @@ export function convertToBaseUnit(product, selectedUnit, quantity) {
   // Default to an empty array so downstream code never has to null-check.
   const conversions = product.uomConversions || [];
 
-  const factor = getEffectiveFactor(conversions, baseUnit, selectedUnit);
+  const factor = getEffectiveBaseFactor(selectedUnit, conversions, baseUnit);
 
   return quantity * factor;
 }
