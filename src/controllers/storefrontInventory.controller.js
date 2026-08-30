@@ -287,6 +287,8 @@ export const getAllStorefrontInventory = asyncErrorHandler(
           "inventoryId.wholesalePrices": 1,
           "inventoryId.barcode": 1,
           "inventoryId.status": 1,
+          "inventoryId.unitOfMeasure": 1,
+          "inventoryId.uom": 1,
           "inventoryId.uomConversions": 1,
           "storefrontId._id": 1,
           "storefrontId.locationName": 1,
