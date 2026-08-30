@@ -74,8 +74,10 @@ export const createGRN = asyncErrorHandler(async (req, res, next) => {
       );
     }
 
-    // Create a map of user-provided line items by productCode for easy lookup
-    const userLineItemsMap = new Map();
+    // Validate line items and support multi-unit products via poLineItemId
+    const seenPoLineItemIds = new Set();
+    const seenProductCodesWithoutLineItemId = new Set();
+
     lineItems.forEach((item, index) => {
       if (!item || typeof item !== "object") {
         throw new CustomError(400, `Line item at index ${index} must be an object`);
@@ -86,21 +88,29 @@ export const createGRN = asyncErrorHandler(async (req, res, next) => {
           `Line item at index ${index} is missing 'productCode'. Each line item must have a productCode to match products from the purchase order.`
         );
       }
-      const productCodeUpper = item.productCode.toUpperCase();
-      if (userLineItemsMap.has(productCodeUpper)) {
-        throw new CustomError(
-          400,
-          `Duplicate productCode '${item.productCode}' found in line items. Each product can only appear once per GRN.`
-        );
-      }
-      userLineItemsMap.set(productCodeUpper, item);
-    });
 
-    // Create a map of PO products by productCode for efficient lookup
-    const poProductsByCode = new Map();
-    purchaseOrder.products.forEach((poProduct) => {
-      const code = poProduct.productCode.toUpperCase();
-      poProductsByCode.set(code, poProduct);
+      if (item.poLineItemId) {
+        if (!mongoose.Types.ObjectId.isValid(item.poLineItemId)) {
+          throw new CustomError(400, `Invalid poLineItemId format at index ${index}`);
+        }
+        const lineIdStr = item.poLineItemId.toString();
+        if (seenPoLineItemIds.has(lineIdStr)) {
+          throw new CustomError(
+            400,
+            `Duplicate PO line item '${item.poLineItemId}' found in line items. Each PO line item can only appear once per GRN.`
+          );
+        }
+        seenPoLineItemIds.add(lineIdStr);
+      } else {
+        const productCodeUpper = item.productCode.toUpperCase();
+        if (seenProductCodesWithoutLineItemId.has(productCodeUpper)) {
+          throw new CustomError(
+            400,
+            `Duplicate productCode '${item.productCode}' found in line items. Specify poLineItemId if purchasing the same product with multiple units.`
+          );
+        }
+        seenProductCodesWithoutLineItemId.add(productCodeUpper);
+      }
     });
 
     // Batch fetch all inventory items for the PO products
@@ -113,15 +123,28 @@ export const createGRN = asyncErrorHandler(async (req, res, next) => {
     // Build GRN line items from user-provided line items (partial GRN support)
     const grnLineItems = [];
     let calculatedTotalAmount = 0;
+    const batchNumbersInCurrentGRN = new Set();
 
-    // Process only the products that user wants to receive (partial GRN)
-    for (const [productCodeUpper, userItem] of userLineItemsMap) {
+    // Process each line item that user wants to receive
+    for (const userItem of lineItems) {
+      const productCodeUpper = userItem.productCode.toUpperCase();
+
       // Find the corresponding PO product
-      const poProduct = poProductsByCode.get(productCodeUpper);
+      let poProduct = null;
+      if (userItem.poLineItemId) {
+        poProduct = purchaseOrder.products.find(
+          (p) => p._id.toString() === userItem.poLineItemId.toString()
+        );
+      } else {
+        poProduct = purchaseOrder.products.find(
+          (p) => p.productCode.toUpperCase() === productCodeUpper
+        );
+      }
+
       if (!poProduct) {
         throw new CustomError(
           400,
-          `Product with productCode '${userItem.productCode}' not found in purchase order.`
+          `Product with productCode '${userItem.productCode}' ${userItem.poLineItemId ? `(line ID: ${userItem.poLineItemId})` : ""} not found in purchase order.`
         );
       }
 
@@ -197,7 +220,7 @@ export const createGRN = asyncErrorHandler(async (req, res, next) => {
       if (receivedQuantity > remainingInBaseUnits) {
         throw new CustomError(
           400,
-          `Received quantity (${receivedQuantity}) for product '${poProduct.productCode}' exceeds remaining purchase order quantity (${remainingInBaseUnits} in base units).`
+          `Received quantity (${receivedQuantity}) for product '${poProduct.productCode}' (${purchaseUnitForConversion}) exceeds remaining purchase order quantity (${remainingInBaseUnits} in base units).`
         );
       }
 
@@ -237,6 +260,13 @@ export const createGRN = asyncErrorHandler(async (req, res, next) => {
           : null;
 
       if (userBatchNumber && userBatchNumber !== "__LEGACY__") {
+        if (batchNumbersInCurrentGRN.has(`${inventoryIdValue}_${userBatchNumber}`)) {
+          throw new CustomError(
+            400,
+            `Duplicate batch number '${userBatchNumber}' within the same GRN for product '${poProduct.productCode}'. Each line item must have a unique batch number.`
+          );
+        }
+
         const existingBatch = await GoodsRecievedNote.findOne({
           lineItems: {
             $elemMatch: {
@@ -254,7 +284,16 @@ export const createGRN = asyncErrorHandler(async (req, res, next) => {
         }
       }
 
-      const batchNumber = userBatchNumber || generateBatchNumber();
+      let batchNumber = userBatchNumber;
+      if (!batchNumber) {
+        // Ensure auto-generated batch number doesn't collide within this GRN
+        do {
+          batchNumber = generateBatchNumber();
+        } while (batchNumbersInCurrentGRN.has(`${inventoryIdValue}_${batchNumber}`));
+      }
+
+      batchNumbersInCurrentGRN.add(`${inventoryIdValue}_${batchNumber}`);
+
       const expiryDate = userItem.expiryDate
         ? new Date(userItem.expiryDate)
         : null;
@@ -265,6 +304,7 @@ export const createGRN = asyncErrorHandler(async (req, res, next) => {
       // Build line item
       grnLineItems.push({
         inventoryId: inventoryIdValue,
+        poLineItemId: poProduct._id,
         batchNumber,
         expiryDate,
         manufacturingDate,
@@ -301,8 +341,10 @@ export const createGRN = asyncErrorHandler(async (req, res, next) => {
     // the received base-unit quantity back to purchase units before updating.
     for (const grnLineItem of grnLineItems) {
       // Find the matching PO product to get its purchaseUnit
-      const matchingPoProduct = purchaseOrder.products.find(
-        (p) => p.inventoryId.toString() === grnLineItem.inventoryId.toString()
+      const matchingPoProduct = purchaseOrder.products.find((p) =>
+        grnLineItem.poLineItemId
+          ? p._id.toString() === grnLineItem.poLineItemId.toString()
+          : p.inventoryId.toString() === grnLineItem.inventoryId.toString()
       );
       const poUnit = matchingPoProduct?.purchaseUnit || grnLineItem.receivedUnit;
       const invItem = inventoryMapByCode.get(
@@ -322,11 +364,18 @@ export const createGRN = asyncErrorHandler(async (req, res, next) => {
         }
       }
 
+      const poUpdateFilter = {
+        _id: purchasingId,
+      };
+
+      if (grnLineItem.poLineItemId) {
+        poUpdateFilter["products._id"] = grnLineItem.poLineItemId;
+      } else {
+        poUpdateFilter["products.inventoryId"] = grnLineItem.inventoryId;
+      }
+
       await Purchasing.updateOne(
-        {
-          _id: purchasingId,
-          "products.inventoryId": grnLineItem.inventoryId,
-        },
+        poUpdateFilter,
         {
           $inc: {
             "products.$.receivedQuantity": qtyInPurchaseUnit,
@@ -347,7 +396,7 @@ export const createGRN = asyncErrorHandler(async (req, res, next) => {
         await Purchasing.updateOne(
           {
             _id: purchasingId,
-            "products.inventoryId": product.inventoryId,
+            "products._id": product._id,
           },
           {
             $set: {
@@ -360,7 +409,7 @@ export const createGRN = asyncErrorHandler(async (req, res, next) => {
         await Purchasing.updateOne(
           {
             _id: purchasingId,
-            "products.inventoryId": product.inventoryId,
+            "products._id": product._id,
           },
           {
             $set: {

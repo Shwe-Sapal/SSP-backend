@@ -10,6 +10,10 @@ const grnLineItemSchema = new mongoose.Schema(
       required: [true, "Product is required"],
       // Auto-filled from PO product based on productCode (handled in controller)
     },
+    poLineItemId: {
+      type: mongoose.Schema.Types.ObjectId,
+      default: null,
+    },
     batchNumber: {
       type: String,
       trim: true,
