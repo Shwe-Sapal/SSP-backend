@@ -713,23 +713,39 @@ export const updateWholePurchase = asyncErrorHandler(async (req, res, next) => {
 
   // Process and validate products if provided
   if (products && Array.isArray(products)) {
+    // Helper to get unique key for an item (by _id if present, or by inventoryId + purchaseUnit)
+    const getProductKey = (p) => {
+      if (p._id) return p._id.toString();
+      const invId = p.inventoryId ? p.inventoryId.toString() : "";
+      const unit = (p.purchaseUnit || "").trim().toLowerCase();
+      return `${invId}_${unit}`;
+    };
+
     // Collect incoming products map for quick lookup
     const incomingProductsMap = new Map();
     products.forEach((p) => {
-      if (p.inventoryId) incomingProductsMap.set(p.inventoryId.toString(), p);
+      incomingProductsMap.set(getProductKey(p), p);
     });
 
     // Check STRICT RULE: existing products
     for (const existingItem of purchase.products) {
       const received = existingItem.receivedQuantity || 0;
       if (received > 0) {
-        const incomingItem = incomingProductsMap.get(existingItem.inventoryId.toString());
+        let incomingItem = incomingProductsMap.get(getProductKey(existingItem));
+        if (!incomingItem) {
+          incomingItem = products.find(
+            (p) =>
+              p.inventoryId &&
+              p.inventoryId.toString() === existingItem.inventoryId.toString() &&
+              (p.purchaseUnit || "").trim().toLowerCase() === (existingItem.purchaseUnit || "").trim().toLowerCase()
+          );
+        }
         // 1. Cannot completely remove it
         if (!incomingItem) {
           return next(
             new CustomError(
               400,
-              `Cannot remove product '${existingItem.productName}' as it has already been partially received (${received} received).`
+              `Cannot remove product '${existingItem.productName}' (${existingItem.purchaseUnit || ""}) as it has already been partially received (${received} received).`
             )
           );
         }
@@ -763,6 +779,7 @@ export const updateWholePurchase = asyncErrorHandler(async (req, res, next) => {
     );
 
     let calculatedTotalAmount = 0;
+    const usedExistingIds = new Set();
 
     // Build the new products array
     const productsWithDetails = products.map((item) => {
@@ -826,12 +843,28 @@ export const updateWholePurchase = asyncErrorHandler(async (req, res, next) => {
       calculatedTotalAmount += itemTotal;
 
       // Find if this product was already in the PO to retain receivedQuantity and _id if possible
-      const existingProduct = purchase.products.find(
-        (p) => p.inventoryId.toString() === item.inventoryId.toString()
-      );
+      let existingProduct = null;
+      if (item._id) {
+        existingProduct = purchase.products.find(
+          (p) => p._id.toString() === item._id.toString()
+        );
+      }
+      if (!existingProduct) {
+        existingProduct = purchase.products.find(
+          (p) =>
+            !usedExistingIds.has(p._id.toString()) &&
+            p.inventoryId.toString() === item.inventoryId.toString() &&
+            (p.purchaseUnit || "").trim().toLowerCase() === (item.purchaseUnit || "").trim().toLowerCase()
+        );
+      }
+      if (existingProduct) {
+        usedExistingIds.add(existingProduct._id.toString());
+      }
 
       return {
-        _id: existingProduct ? existingProduct._id : undefined, // retain subdocument ID if it exists
+        _id: existingProduct
+          ? existingProduct._id
+          : (item._id && mongoose.Types.ObjectId.isValid(item._id) ? item._id : new mongoose.Types.ObjectId()),
         inventoryId: inventoryItem._id,
         productName: inventoryItem.productName,
         productCode: inventoryItem.productCode,
