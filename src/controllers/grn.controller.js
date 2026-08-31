@@ -4,11 +4,12 @@ import Purchasing from "../models/purchasing.model.js";
 import Inventory from "../models/inventory.model.js";
 import { asyncErrorHandler } from "../utils/asyncErrorHandler.js";
 import CustomError from "../utils/customError.js";
-import { convertToBaseUnit } from "../utils/uom.utils.js";
+import { convertToBaseUnit, getEffectiveBaseFactor } from "../utils/uom.utils.js";
 import { createStockAuditLog } from "../services/stockAuditLog.service.js";
 import WarehouseStock from "../models/warehouse.model.js";
 import StorefrontInventory from "../models/storefrontInventory.model.js";
 import { createDateFilter } from "../utils/dateFilter.utils.js";
+import StockAuditLog from "../models/stockAuditLog.model.js";
 
 // Helper function to generate unique batch number in format BAT-YYYYMMDD-XXXX
 const generateBatchNumber = () => {
@@ -426,41 +427,100 @@ export const createGRN = asyncErrorHandler(async (req, res, next) => {
     const locType = locationType || 'warehouse';
 
     if (locId) {
-      for (const item of grnLineItems) {
-        if (locType === 'warehouse') {
-          // Find existing stock record or create one with 0 quantity if it doesn't exist
-          let stockRecord = await WarehouseStock.findOne({
-            inventoryId: item.inventoryId,
-            warehouseId: locId,
-            batchNumber: item.batchNumber
-          }).session(session);
+      // We need inventoryMapById to get uomConversions
+      const inventoryMapById = new Map(
+        inventoryItems.map((item) => [item._id.toString(), item])
+      );
 
+      // 1. Strict Base Quantity Conversion & Aggregate Strictly by Inventory ID
+      const aggregatedStockMap = new Map();
+      
+      for (const item of grnLineItems) {
+        // Find the effective base factor
+        const inventoryItem = inventoryMapById.get(item.inventoryId.toString());
+        const baseUnit = inventoryItem.unitOfMeasure || inventoryItem.uom || "";
+        const conversions = inventoryItem.uomConversions || [];
+        const effectiveFactor = getEffectiveBaseFactor(item.receivedUnit, conversions, baseUnit);
+        
+        // Calculate trueBaseQty = goodQuantity * effectiveFactor
+        const trueBaseQty = item.goodQuantity * effectiveFactor;
+        
+        // Aggregate strictly by inventoryId, ignore batchNumber for this total stock update
+        const key = item.inventoryId.toString();
+        
+        if (aggregatedStockMap.has(key)) {
+          const existing = aggregatedStockMap.get(key);
+          existing.goodBaseQuantity += trueBaseQty;
+        } else {
+          // Clone the item and force batchNumber to __LEGACY__ as requested
+          aggregatedStockMap.set(key, { ...item, goodBaseQuantity: trueBaseQty, batchNumber: "__LEGACY__" });
+        }
+      }
+      
+      const aggregatedStockItems = Array.from(aggregatedStockMap.values());
+
+      const inventoryIds = aggregatedStockItems.map(item => item.inventoryId);
+      const batchNumbers = ["__LEGACY__"];
+
+      if (locType === 'warehouse') {
+        const existingStocks = await WarehouseStock.find({
+          warehouseId: locId,
+          inventoryId: { $in: inventoryIds },
+          batchNumber: { $in: batchNumbers }
+        }).session(session);
+
+        const stockMap = new Map(existingStocks.map(stock => `${stock.inventoryId.toString()}_${stock.batchNumber}`));
+        
+        const bulkOps = [];
+        const auditLogs = [];
+        
+        for (const item of aggregatedStockItems) {
+          const key = `${item.inventoryId.toString()}_${item.batchNumber || "__LEGACY__"}`;
+          const existingStock = stockMap.get(key);
+          const changeQty = item.goodBaseQuantity;
+          
           let beforeQty = 0;
-          if (!stockRecord) {
-            const newStock = await WarehouseStock.create([{
-              inventoryId: item.inventoryId,
-              warehouseId: locId,
-              batchNumber: item.batchNumber,
-              quantity: 0,
-              expiryDate: item.expiryDate,
-              manufacturingDate: item.manufacturingDate,
-              lastUpdated: new Date()
-            }], { session });
-            stockRecord = newStock[0];
+          let stockRecordId;
+
+          if (existingStock) {
+            beforeQty = existingStock.quantity;
+            stockRecordId = existingStock._id;
+            
+            bulkOps.push({
+              updateOne: {
+                filter: { _id: stockRecordId },
+                update: {
+                  $inc: { quantity: changeQty },
+                  $set: { lastUpdated: new Date() }
+                }
+              }
+            });
           } else {
-            beforeQty = stockRecord.quantity;
+            stockRecordId = new mongoose.Types.ObjectId();
+            bulkOps.push({
+              insertOne: {
+                document: {
+                  _id: stockRecordId,
+                  inventoryId: item.inventoryId,
+                  warehouseId: locId,
+                  batchNumber: item.batchNumber || "__LEGACY__",
+                  quantity: changeQty,
+                  expiryDate: item.expiryDate,
+                  manufacturingDate: item.manufacturingDate,
+                  lastUpdated: new Date()
+                }
+              }
+            });
           }
 
-          const changeQty = item.baseQuantity;
           const afterQty = beforeQty + changeQty;
 
-          // Log the transaction before updating the stock
-          await createStockAuditLog({
+          auditLogs.push({
             inventoryId: item.inventoryId,
             adminId: req.user._id,
             locationId: locId,
             locationType: 'warehouse',
-            stockRecordId: stockRecord._id,
+            stockRecordId: stockRecordId,
             beforeQuantity: beforeQty,
             afterQuantity: afterQty,
             quantityChange: changeQty,
@@ -468,18 +528,89 @@ export const createGRN = asyncErrorHandler(async (req, res, next) => {
             reason: `GRN Received: ${purchaseOrder.poNumber}`,
             relatedTransactionId: savedGRN._id,
             relatedTransactionType: 'grn',
-            session
           });
+        }
 
-          // Update actual Inventory/Warehouse stock strictly utilizing the $inc operator with Base Quantity
-          await WarehouseStock.updateOne(
-            { _id: stockRecord._id },
-            {
-              $inc: { quantity: changeQty },
-              $set: { lastUpdated: new Date() }
-            },
-            { session }
-          );
+        if (bulkOps.length > 0) {
+          await WarehouseStock.bulkWrite(bulkOps, { session });
+        }
+        if (auditLogs.length > 0) {
+          await StockAuditLog.insertMany(auditLogs, { session });
+        }
+      } else if (locType === 'storefront') {
+        const existingStocks = await StorefrontInventory.find({
+          storefrontId: locId,
+          inventoryId: { $in: inventoryIds },
+          batchNumber: { $in: batchNumbers }
+        }).session(session);
+
+        const stockMap = new Map(existingStocks.map(stock => `${stock.inventoryId.toString()}_${stock.batchNumber}`));
+        
+        const bulkOps = [];
+        const auditLogs = [];
+        
+        for (const item of aggregatedStockItems) {
+          const key = `${item.inventoryId.toString()}_${item.batchNumber || "__LEGACY__"}`;
+          const existingStock = stockMap.get(key);
+          const changeQty = item.goodBaseQuantity;
+          
+          let beforeQty = 0;
+          let stockRecordId;
+
+          if (existingStock) {
+            beforeQty = existingStock.quantity;
+            stockRecordId = existingStock._id;
+            
+            bulkOps.push({
+              updateOne: {
+                filter: { _id: stockRecordId },
+                update: {
+                  $inc: { quantity: changeQty },
+                  $set: { lastUpdated: new Date() }
+                }
+              }
+            });
+          } else {
+            stockRecordId = new mongoose.Types.ObjectId();
+            bulkOps.push({
+              insertOne: {
+                document: {
+                  _id: stockRecordId,
+                  inventoryId: item.inventoryId,
+                  storefrontId: locId,
+                  batchNumber: item.batchNumber || "__LEGACY__",
+                  quantity: changeQty,
+                  expiryDate: item.expiryDate,
+                  manufacturingDate: item.manufacturingDate,
+                  lastUpdated: new Date()
+                }
+              }
+            });
+          }
+
+          const afterQty = beforeQty + changeQty;
+
+          auditLogs.push({
+            inventoryId: item.inventoryId,
+            adminId: req.user._id,
+            locationId: locId,
+            locationType: 'storefront',
+            stockRecordId: stockRecordId,
+            beforeQuantity: beforeQty,
+            afterQuantity: afterQty,
+            quantityChange: changeQty,
+            action: 'add',
+            reason: `GRN Received: ${purchaseOrder.poNumber}`,
+            relatedTransactionId: savedGRN._id,
+            relatedTransactionType: 'grn',
+          });
+        }
+
+        if (bulkOps.length > 0) {
+          await StorefrontInventory.bulkWrite(bulkOps, { session });
+        }
+        if (auditLogs.length > 0) {
+          await StockAuditLog.insertMany(auditLogs, { session });
         }
       }
     }

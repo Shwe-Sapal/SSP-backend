@@ -6,12 +6,13 @@ import LuckyDrawPromotion from "../models/luckyDrawPromotion.model.js";
 import LuckyDrawRedemption from "../models/luckyDrawRedemption.model.js";
 import StorefrontInventory from "../models/storefrontInventory.model.js";
 import { createStockAuditLog } from "../services/stockAuditLog.service.js";
+import { getEffectiveBaseFactor } from "../utils/uom.utils.js";
 
 // ─── Promotion CRUD ───────────────────────────────────────────────
 
 // CREATE Promotion
 export const createPromotion = asyncErrorHandler(async (req, res, next) => {
-  const { promotionName, ticketName, inventoryId, redemptionPrice, quantityPerRedeem, storefrontId } = req.body;
+  const { promotionName, ticketName, inventoryId, redemptionPrice, quantityPerRedeem, prizeUnit, storefrontId } = req.body;
 
   if (!promotionName) return next(new CustomError(400, "Promotion name is required"));
   if (!ticketName) return next(new CustomError(400, "Ticket name is required"));
@@ -19,6 +20,7 @@ export const createPromotion = asyncErrorHandler(async (req, res, next) => {
   if (!mongoose.Types.ObjectId.isValid(inventoryId)) {
     return next(new CustomError(400, "Invalid product ID format"));
   }
+  if (!prizeUnit) return next(new CustomError(400, "Prize unit is required"));
   if (redemptionPrice === undefined || redemptionPrice === null) {
     return next(new CustomError(400, "Redemption price is required"));
   }
@@ -32,6 +34,7 @@ export const createPromotion = asyncErrorHandler(async (req, res, next) => {
     inventoryId,
     redemptionPrice,
     quantityPerRedeem: quantityPerRedeem || 1,
+    prizeUnit,
     storefrontId: storefrontId || null,
     createdBy: req.user?._id || req.user?.id || null,
   });
@@ -178,11 +181,17 @@ export const processRedemption = asyncErrorHandler(async (req, res, next) => {
         _id: promotionId,
         isActive: true,
         isDeleted: false,
-      }).session(session);
+      }).populate("inventoryId").session(session);
 
       if (!promotion) {
         throw new CustomError(400, "Promotion is not active or not found");
       }
+
+      const product = promotion.inventoryId;
+      if (!product) {
+        throw new CustomError(400, "Promotional product not found");
+      }
+      const inventoryIdValue = product._id;
 
       // Validate storefront matches the promotion's target storefront
       if (promotion.storefrontId && promotion.storefrontId.toString() !== storefrontId.toString()) {
@@ -197,43 +206,82 @@ export const processRedemption = asyncErrorHandler(async (req, res, next) => {
         }
       }
 
-      const productQuantity = promotion.quantityPerRedeem * redeemQuantity;
+      const baseUnit = product.unitOfMeasure || product.uom || "";
+      const conversions = product.uomConversions || [];
+      const effectiveFactor = getEffectiveBaseFactor(promotion.prizeUnit, conversions, baseUnit);
+      
+      const trueBaseQuantity = promotion.quantityPerRedeem * redeemQuantity * effectiveFactor;
 
-      // 2. Find StorefrontInventory and check stock atomically
-      const stockRecord = await StorefrontInventory.findOne({
-        inventoryId: promotion.inventoryId,
+      // 2. Find ALL StorefrontInventory batch documents for this product in this storefront
+      const stockRecords = await StorefrontInventory.find({
+        inventoryId: inventoryIdValue,
         storefrontId,
-      }).session(session);
+        quantity: { $gt: 0 },
+      }).sort({ createdAt: 1 }).session(session);
 
-      if (!stockRecord) {
+      if (!stockRecords || stockRecords.length === 0) {
         throw new CustomError(400, "Product not found in this storefront");
       }
 
-      // 3. Atomically deduct stock using findOneAndUpdate with quantity filter
-      // This prevents negative stock even if validators don't run
-      const beforeQuantity = stockRecord.quantity;
-      const updatedStock = await StorefrontInventory.findOneAndUpdate(
-        { _id: stockRecord._id, quantity: { $gte: productQuantity } },
-        { $inc: { quantity: -productQuantity }, $set: { lastUpdated: new Date() } },
-        { new: true, session }
-      );
+      // 3. Aggregate total available stock across ALL batch documents
+      const totalAvailable = stockRecords.reduce((sum, r) => sum + (r.quantity || 0), 0);
 
-      if (!updatedStock) {
-        throw new CustomError(400, "Insufficient stock");
+      if (totalAvailable < trueBaseQuantity) {
+        throw new CustomError(
+          400,
+          `Insufficient stock for prize. Available: ${totalAvailable}, Requested: ${trueBaseQuantity} (Base Quantity)`
+        );
       }
 
-      // 4. Generate redemption number
+      // 4. Deduct stock atomically across batch documents (FIFO: oldest batches first)
+      let remainingToDeduct = trueBaseQuantity;
+      const deductionDetails = []; // track per-batch deductions for audit
+
+      for (const record of stockRecords) {
+        if (remainingToDeduct <= 0) break;
+
+        const deductFromThis = Math.min(record.quantity, remainingToDeduct);
+
+        const updatedRecord = await StorefrontInventory.findOneAndUpdate(
+          { _id: record._id, quantity: { $gte: deductFromThis } },
+          {
+            $inc: { quantity: -deductFromThis },
+            $set: { lastUpdated: new Date() },
+          },
+          { new: true, session }
+        );
+
+        if (!updatedRecord) {
+          // Concurrent modification — abort (transaction will rollback)
+          throw new CustomError(400, "Stock was modified concurrently. Please try again.");
+        }
+
+        deductionDetails.push({
+          stockRecordId: updatedRecord._id,
+          beforeQuantity: record.quantity,
+          afterQuantity: updatedRecord.quantity,
+          deducted: deductFromThis,
+        });
+
+        remainingToDeduct -= deductFromThis;
+      }
+
+      if (remainingToDeduct > 0) {
+        throw new CustomError(400, "Could not fully deduct stock. Please try again.");
+      }
+
+      // 5. Generate redemption number
       const redemptionNumber = await LuckyDrawRedemption.generateRedemptionNumber();
 
-      // 5. Create redemption record
-      const totalAmount = promotion.redemptionPrice * productQuantity;
+      // 6. Create redemption record
+      const totalAmount = promotion.redemptionPrice * (promotion.quantityPerRedeem * redeemQuantity);
       const redemptions = await LuckyDrawRedemption.create(
         [
           {
             redemptionNumber,
             promotionId: promotion._id,
-            inventoryId: promotion.inventoryId,
-            quantity: productQuantity,
+            inventoryId: inventoryIdValue,
+            quantity: trueBaseQuantity,
             unitPrice: promotion.redemptionPrice,
             totalAmount,
             storefrontId,
@@ -246,22 +294,24 @@ export const processRedemption = asyncErrorHandler(async (req, res, next) => {
         { session }
       );
 
-      // 6. Create stock audit log entry
-      await createStockAuditLog({
-        inventoryId: promotion.inventoryId,
-        adminId: req.user?._id || req.user?.id,
-        locationId: storefrontId,
-        locationType: "storefront",
-        stockRecordId: updatedStock._id,
-        beforeQuantity,
-        afterQuantity: updatedStock.quantity,
-        quantityChange: -productQuantity,
-        action: "remove",
-        reason: `Lucky draw redemption: ${promotion.promotionName} - ${promotion.ticketName}`,
-        relatedTransactionId: redemptions[0]._id,
-        relatedTransactionType: "lucky_draw_redemption",
-        session,
-      });
+      // 7. Create stock audit log entries (one per batch touched)
+      for (const detail of deductionDetails) {
+        await createStockAuditLog({
+          inventoryId: inventoryIdValue,
+          adminId: req.user?._id || req.user?.id,
+          locationId: storefrontId,
+          locationType: "storefront",
+          stockRecordId: detail.stockRecordId,
+          beforeQuantity: detail.beforeQuantity,
+          afterQuantity: detail.afterQuantity,
+          quantityChange: -detail.deducted,
+          action: "remove",
+          reason: `Lucky draw redemption: ${promotion.promotionName} - ${promotion.ticketName}`,
+          relatedTransactionId: redemptions[0]._id,
+          relatedTransactionType: "lucky_draw_redemption",
+          session,
+        });
+      }
 
       res.status(201).json({
         success: true,

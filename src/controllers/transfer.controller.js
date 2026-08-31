@@ -9,6 +9,34 @@ import { convertToBaseUnit } from "../utils/uom.utils.js";
 import { asyncErrorHandler } from "../utils/asyncErrorHandler.js";
 import CustomError from "../utils/customError.js";
 
+// Helper to aggregate line items to prevent race conditions during validation and transfer
+// when multiple line items for the same product are sent simultaneously.
+const aggregateTransferLineItems = (transferLineItems) => {
+  const aggregatedItemsMap = new Map();
+  for (const item of transferLineItems) {
+    if (!item.productCode || item.quantity === undefined || item.quantity === null) {
+      // Missing required fields will be caught by the validation loop below
+      aggregatedItemsMap.set(Math.random().toString(), item);
+      continue;
+    }
+    const batch = item.batchNumber || "__LEGACY__";
+    const unit = item.transferUnit ? item.transferUnit.trim().toLowerCase() : "piece";
+    const grnLineItemId = item.grnLineItemId ? item.grnLineItemId.toString() : "";
+    const key = `${item.productCode.toUpperCase()}_${batch}_${unit}_${grnLineItemId}`;
+    
+    if (aggregatedItemsMap.has(key)) {
+      const existing = aggregatedItemsMap.get(key);
+      existing.quantity = Number(existing.quantity) + Number(item.quantity);
+      if (item.notes) {
+        existing.notes = existing.notes ? `${existing.notes}; ${item.notes}` : item.notes;
+      }
+    } else {
+      aggregatedItemsMap.set(key, { ...item, quantity: typeof item.quantity === 'number' ? item.quantity : Number(item.quantity) });
+    }
+  }
+  return Array.from(aggregatedItemsMap.values());
+};
+
 // Create new Transfer (supports both GRN → Warehouse and Warehouse → Storefront)
 export const createTransfer = asyncErrorHandler(async (req, res, next) => {
   if (!req.user || !req.user._id) {
@@ -231,7 +259,7 @@ export const createTransfer = asyncErrorHandler(async (req, res, next) => {
   // Validate and process line items
   const validatedLineItems = [];
 
-  for (const userItem of transferLineItems) {
+  for (const userItem of aggregateTransferLineItems(transferLineItems)) {
     // Validate required fields
     if (!userItem.productCode) {
       return next(new CustomError(400, "Each line item must have productCode"));
@@ -679,7 +707,7 @@ export const transferWarehouseToWarehouse = asyncErrorHandler(
     // Validate and process line items
     const validatedLineItems = [];
 
-    for (const userItem of transferLineItems) {
+    for (const userItem of aggregateTransferLineItems(transferLineItems)) {
       // Validate required fields
       if (!userItem.productCode) {
         return next(
@@ -950,7 +978,7 @@ export const transferStorefrontToWarehouse = asyncErrorHandler(
     // Validate and process line items
     const validatedLineItems = [];
 
-    for (const userItem of transferLineItems) {
+    for (const userItem of aggregateTransferLineItems(transferLineItems)) {
       // Validate required fields
       if (!userItem.productCode) {
         return next(
@@ -1227,7 +1255,7 @@ export const transferWarehouseToStorefront = asyncErrorHandler(
     // Validate and process line items
     const validatedLineItems = [];
 
-    for (const userItem of transferLineItems) {
+    for (const userItem of aggregateTransferLineItems(transferLineItems)) {
       // Validate required fields
       if (!userItem.productCode) {
         return next(
@@ -1512,7 +1540,7 @@ export const transferStorefrontToStorefront = asyncErrorHandler(
     // Validate and process line items
     const validatedLineItems = [];
 
-    for (const userItem of transferLineItems) {
+    for (const userItem of aggregateTransferLineItems(transferLineItems)) {
       // Validate required fields
       if (!userItem.productCode) {
         return next(

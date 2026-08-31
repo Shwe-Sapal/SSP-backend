@@ -24,6 +24,11 @@ const luckyDrawPromotionSchema = new mongoose.Schema(
       required: [true, "Redemption price is required"],
       min: [0, "Redemption price cannot be negative"],
     },
+    prizeUnit: {
+      type: String,
+      required: [true, "Prize unit is required"],
+      trim: true,
+    },
     quantityPerRedeem: {
       type: Number,
       default: 1,

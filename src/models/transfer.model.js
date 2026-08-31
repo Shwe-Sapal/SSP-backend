@@ -1,4 +1,5 @@
 import mongoose from "mongoose";
+import { getEffectiveBaseFactor } from "../utils/uom.utils.js";
 
 // Transfer Line Item Schema
 const transferLineItemSchema = new mongoose.Schema(
@@ -305,37 +306,40 @@ transferSchema.methods._updateGRNToWarehouseStock = async function (
 ) {
   const WarehouseStock = mongoose.model("WarehouseStock");
   const GoodsRecievedNote = mongoose.model("GoodsRecievedNote");
+  const Inventory = mongoose.model("Inventory");
 
-  // Fetch GRN to validate and update
-  const grn = await GoodsRecievedNote.findById(this.sourceId).session(
-    session || null
-  );
+  const grn = await GoodsRecievedNote.findById(this.sourceId).session(session || null);
+  if (!grn) throw new Error(`GRN with ID ${this.sourceId} not found`);
 
-  if (!grn) {
-    throw new Error(`GRN with ID ${this.sourceId} not found`);
-  }
+  const inventoryIds = [...new Set(this.lineItems.map(item => item.inventoryId.toString()))];
+  const products = await Inventory.find({ _id: { $in: inventoryIds } }).lean();
+  const productMap = new Map(products.map(p => [p._id.toString(), p]));
 
-  // Process each transfer line item
+  const aggregatedDestOps = new Map();
+
   for (const transferItem of this.lineItems) {
-    if (transferItem.baseQuantity <= 0) continue;
+    if (transferItem.quantity <= 0) continue;
 
-    // Find corresponding GRN line item
+    const product = productMap.get(transferItem.inventoryId.toString());
+    const baseUnit = product ? (product.unitOfMeasure || product.uom || "") : "";
+    const conversions = product ? (product.uomConversions || []) : [];
+    const effectiveFactor = getEffectiveBaseFactor(transferItem.transferUnit, conversions, baseUnit);
+    
+    const trueBaseQty = transferItem.quantity * effectiveFactor;
+    if (trueBaseQty <= 0) continue;
+
     let grnLineItem = null;
     let grnLineItemIndex = -1;
     if (transferItem.grnLineItemId) {
-      // If grnLineItemId is provided, use it directly
       grnLineItem = grn.lineItems.id(transferItem.grnLineItemId);
       if (grnLineItem) {
         grnLineItemIndex = grn.lineItems.findIndex(
-          (item) =>
-            item._id.toString() === transferItem.grnLineItemId.toString()
+          (item) => item._id.toString() === transferItem.grnLineItemId.toString()
         );
       }
     } else {
-      // Otherwise, find by inventoryId
       grnLineItemIndex = grn.lineItems.findIndex(
-        (item) =>
-          item.inventoryId.toString() === transferItem.inventoryId.toString()
+        (item) => item.inventoryId.toString() === transferItem.inventoryId.toString()
       );
       if (grnLineItemIndex !== -1) {
         grnLineItem = grn.lineItems[grnLineItemIndex];
@@ -343,74 +347,60 @@ transferSchema.methods._updateGRNToWarehouseStock = async function (
     }
 
     if (!grnLineItem || grnLineItemIndex === -1) {
-      throw new Error(
-        `GRN line item not found for inventory ${transferItem.inventoryId}`
-      );
+      throw new Error(`GRN line item not found for inventory ${transferItem.inventoryId}`);
     }
 
-    // Validate available quantity
-    const availableQty =
-      grnLineItem.goodQuantity - (grnLineItem.transferredQuantity || 0);
-    if (transferItem.baseQuantity > availableQty) {
-      throw new Error(
-        `Transfer quantity (${transferItem.baseQuantity}) exceeds available quantity (${availableQty}) for inventory ${transferItem.inventoryId}`
-      );
+    const availableQty = grnLineItem.goodQuantity - (grnLineItem.transferredQuantity || 0);
+    if (trueBaseQty > availableQty) {
+      throw new Error(`Transfer quantity (${trueBaseQty}) exceeds available quantity (${availableQty}) for inventory ${transferItem.inventoryId}`);
     }
 
-    // Update GRN line item's transferredQuantity atomically using $inc
-    // Uses positional operator $ to update the specific line item
     const grnUpdateResult = await GoodsRecievedNote.findOneAndUpdate(
       { _id: this.sourceId, "lineItems._id": grnLineItem._id },
-      {
-        $inc: {
-          [`lineItems.$.transferredQuantity`]: transferItem.baseQuantity,
-        },
-      },
+      { $inc: { [`lineItems.$.transferredQuantity`]: trueBaseQty } },
       { new: true, session }
     );
 
     if (!grnUpdateResult) {
-      throw new Error(
-        `GRN line item with ID ${grnLineItem._id} not found or GRN not found.`
-      );
+      throw new Error(`GRN line item with ID ${grnLineItem._id} not found.`);
     }
 
-    const batchNumber =
-      transferItem.batchNumber || grnLineItem?.batchNumber || "__LEGACY__";
-    const expiryDate =
-      transferItem.expiryDate || grnLineItem?.expiryDate || null;
-    const manufacturingDate =
-      transferItem.manufacturingDate || grnLineItem?.manufacturingDate || null;
-
-    // Find or create warehouse stock record and update atomically using $inc
-    // Uses upsert to create if doesn't exist, or update if exists
-    // Note: $inc on a non-existent field treats it as 0, so no need for quantity in $setOnInsert
-    await WarehouseStock.findOneAndUpdate(
-      {
+    const destKey = transferItem.inventoryId.toString();
+    if (aggregatedDestOps.has(destKey)) {
+      aggregatedDestOps.get(destKey).trueBaseQty += trueBaseQty;
+    } else {
+      aggregatedDestOps.set(destKey, {
         inventoryId: transferItem.inventoryId,
-        warehouseId: this.destinationWarehouseId,
+        trueBaseQty: trueBaseQty,
+        expiryDate: transferItem.expiryDate || grnLineItem?.expiryDate || null,
+        manufacturingDate: transferItem.manufacturingDate || grnLineItem?.manufacturingDate || null
+      });
+    }
+  }
+
+  const destOps = Array.from(aggregatedDestOps.values()).map(item => ({
+    updateOne: {
+      filter: { 
+        inventoryId: item.inventoryId,
+        warehouseId: this.destinationWarehouseId
       },
-      {
-        $inc: { quantity: transferItem.baseQuantity },
-        $set: {
-          lastUpdated: new Date(),
-        },
+      update: {
+        $inc: { quantity: item.trueBaseQty },
+        $set: { lastUpdated: new Date() },
         $setOnInsert: {
-          inventoryId: transferItem.inventoryId,
+          inventoryId: item.inventoryId,
           warehouseId: this.destinationWarehouseId,
-          batchNumber: batchNumber,
-          expiryDate: expiryDate,
-          manufacturingDate: manufacturingDate,
-          // quantity is handled by $inc - if document doesn't exist, $inc creates it with transferItem.baseQuantity
-        },
+          batchNumber: "__LEGACY__",
+          expiryDate: item.expiryDate,
+          manufacturingDate: item.manufacturingDate
+        }
       },
-      {
-        upsert: true,
-        session,
-        new: true,
-        runValidators: true,
-      }
-    );
+      upsert: true
+    }
+  }));
+
+  if (destOps.length > 0) {
+    await WarehouseStock.bulkWrite(destOps, { session });
   }
 };
 
@@ -420,37 +410,40 @@ transferSchema.methods._updateGRNToStorefrontStock = async function (
 ) {
   const StorefrontInventory = mongoose.model("StorefrontInventory");
   const GoodsRecievedNote = mongoose.model("GoodsRecievedNote");
+  const Inventory = mongoose.model("Inventory");
 
-  // Fetch GRN to validate and update
-  const grn = await GoodsRecievedNote.findById(this.sourceId).session(
-    session || null
-  );
+  const grn = await GoodsRecievedNote.findById(this.sourceId).session(session || null);
+  if (!grn) throw new Error(`GRN with ID ${this.sourceId} not found`);
 
-  if (!grn) {
-    throw new Error(`GRN with ID ${this.sourceId} not found`);
-  }
+  const inventoryIds = [...new Set(this.lineItems.map(item => item.inventoryId.toString()))];
+  const products = await Inventory.find({ _id: { $in: inventoryIds } }).lean();
+  const productMap = new Map(products.map(p => [p._id.toString(), p]));
 
-  // Process each transfer line item
+  const aggregatedDestOps = new Map();
+
   for (const transferItem of this.lineItems) {
-    if (transferItem.baseQuantity <= 0) continue;
+    if (transferItem.quantity <= 0) continue;
 
-    // Find corresponding GRN line item
+    const product = productMap.get(transferItem.inventoryId.toString());
+    const baseUnit = product ? (product.unitOfMeasure || product.uom || "") : "";
+    const conversions = product ? (product.uomConversions || []) : [];
+    const effectiveFactor = getEffectiveBaseFactor(transferItem.transferUnit, conversions, baseUnit);
+    
+    const trueBaseQty = transferItem.quantity * effectiveFactor;
+    if (trueBaseQty <= 0) continue;
+
     let grnLineItem = null;
     let grnLineItemIndex = -1;
     if (transferItem.grnLineItemId) {
-      // If grnLineItemId is provided, use it directly
       grnLineItem = grn.lineItems.id(transferItem.grnLineItemId);
       if (grnLineItem) {
         grnLineItemIndex = grn.lineItems.findIndex(
-          (item) =>
-            item._id.toString() === transferItem.grnLineItemId.toString()
+          (item) => item._id.toString() === transferItem.grnLineItemId.toString()
         );
       }
     } else {
-      // Otherwise, find by inventoryId
       grnLineItemIndex = grn.lineItems.findIndex(
-        (item) =>
-          item.inventoryId.toString() === transferItem.inventoryId.toString()
+        (item) => item.inventoryId.toString() === transferItem.inventoryId.toString()
       );
       if (grnLineItemIndex !== -1) {
         grnLineItem = grn.lineItems[grnLineItemIndex];
@@ -458,75 +451,60 @@ transferSchema.methods._updateGRNToStorefrontStock = async function (
     }
 
     if (!grnLineItem || grnLineItemIndex === -1) {
-      throw new Error(
-        `GRN line item not found for inventory ${transferItem.inventoryId}`
-      );
+      throw new Error(`GRN line item not found for inventory ${transferItem.inventoryId}`);
     }
 
-    // Validate available quantity
-    const availableQty =
-      grnLineItem.goodQuantity - (grnLineItem.transferredQuantity || 0);
-    if (transferItem.baseQuantity > availableQty) {
-      throw new Error(
-        `Transfer quantity (${transferItem.baseQuantity}) exceeds available quantity (${availableQty}) for inventory ${transferItem.inventoryId}`
-      );
+    const availableQty = grnLineItem.goodQuantity - (grnLineItem.transferredQuantity || 0);
+    if (trueBaseQty > availableQty) {
+      throw new Error(`Transfer quantity (${trueBaseQty}) exceeds available quantity (${availableQty}) for inventory ${transferItem.inventoryId}`);
     }
 
-    // Update GRN line item's transferredQuantity atomically using $inc
-    // Uses positional operator $ to update the specific line item
     const grnUpdateResult = await GoodsRecievedNote.findOneAndUpdate(
       { _id: this.sourceId, "lineItems._id": grnLineItem._id },
-      {
-        $inc: {
-          [`lineItems.$.transferredQuantity`]: transferItem.baseQuantity,
-        },
-      },
+      { $inc: { [`lineItems.$.transferredQuantity`]: trueBaseQty } },
       { new: true, session }
     );
 
     if (!grnUpdateResult) {
-      throw new Error(
-        `GRN line item with ID ${grnLineItem._id} not found or GRN not found.`
-      );
+      throw new Error(`GRN line item with ID ${grnLineItem._id} not found.`);
     }
 
-    const batchNumber =
-      transferItem.batchNumber || grnLineItem?.batchNumber || "__LEGACY__";
-    const expiryDate =
-      transferItem.expiryDate || grnLineItem?.expiryDate || null;
-    const manufacturingDate =
-      transferItem.manufacturingDate || grnLineItem?.manufacturingDate || null;
-
-    // Find or create storefront inventory record and update atomically using $inc
-    // Uses upsert to create if doesn't exist, or update if exists
-    // Note: $inc on a non-existent field treats it as 0, so no need for quantity in $setOnInsert
-    await StorefrontInventory.findOneAndUpdate(
-      {
+    const destKey = transferItem.inventoryId.toString();
+    if (aggregatedDestOps.has(destKey)) {
+      aggregatedDestOps.get(destKey).trueBaseQty += trueBaseQty;
+    } else {
+      aggregatedDestOps.set(destKey, {
         inventoryId: transferItem.inventoryId,
-        storefrontId: this.destinationStorefrontId,
-        batchNumber: batchNumber,
+        trueBaseQty: trueBaseQty,
+        expiryDate: transferItem.expiryDate || grnLineItem?.expiryDate || null,
+        manufacturingDate: transferItem.manufacturingDate || grnLineItem?.manufacturingDate || null
+      });
+    }
+  }
+
+  const destOps = Array.from(aggregatedDestOps.values()).map(item => ({
+    updateOne: {
+      filter: { 
+        inventoryId: item.inventoryId,
+        storefrontId: this.destinationStorefrontId
       },
-      {
-        $inc: { quantity: transferItem.baseQuantity },
-        $set: {
-          lastUpdated: new Date(),
-        },
+      update: {
+        $inc: { quantity: item.trueBaseQty },
+        $set: { lastUpdated: new Date() },
         $setOnInsert: {
-          inventoryId: transferItem.inventoryId,
+          inventoryId: item.inventoryId,
           storefrontId: this.destinationStorefrontId,
-          batchNumber: batchNumber,
-          expiryDate: expiryDate,
-          manufacturingDate: manufacturingDate,
-          // quantity is handled by $inc - if document doesn't exist, $inc creates it with transferItem.baseQuantity
-        },
+          batchNumber: "__LEGACY__",
+          expiryDate: item.expiryDate,
+          manufacturingDate: item.manufacturingDate
+        }
       },
-      {
-        upsert: true,
-        session,
-        new: true,
-        runValidators: true,
-      }
-    );
+      upsert: true
+    }
+  }));
+
+  if (destOps.length > 0) {
+    await StorefrontInventory.bulkWrite(destOps, { session });
   }
 };
 
@@ -537,94 +515,95 @@ transferSchema.methods._updateWarehouseToStorefrontStock = async function (
   const WarehouseStock = mongoose.model("WarehouseStock");
   const StorefrontInventory = mongoose.model("StorefrontInventory");
   const LocationProfile = mongoose.model("LocationProfile");
+  const Inventory = mongoose.model("Inventory");
 
-  // Validate source warehouse exists
-  const sourceWarehouse = await LocationProfile.findOne({
-    _id: this.sourceId,
-    type: "warehouse",
-  }).session(session || null);
+  const sourceLocation = await LocationProfile.findOne({ _id: this.sourceId, type: "warehouse" }).session(session || null);
+  if (!sourceLocation) throw new Error(`Source location with ID ${this.sourceId} not found`);
 
-  if (!sourceWarehouse) {
-    throw new Error(`Source warehouse with ID ${this.sourceId} not found`);
+  const destLocation = await LocationProfile.findOne({ _id: this.destinationStorefrontId, type: "storefront" }).session(session || null);
+  if (!destLocation) throw new Error(`Destination location with ID ${this.destinationStorefrontId} not found`);
+
+  const inventoryIds = [...new Set(this.lineItems.map(item => item.inventoryId.toString()))];
+  const products = await Inventory.find({ _id: { $in: inventoryIds } }).lean();
+  const productMap = new Map(products.map(p => [p._id.toString(), p]));
+
+  const aggregatedOps = new Map();
+
+  for (const transferItem of this.lineItems) {
+    if (transferItem.quantity <= 0) continue;
+
+    const product = productMap.get(transferItem.inventoryId.toString());
+    const baseUnit = product ? (product.unitOfMeasure || product.uom || "") : "";
+    const conversions = product ? (product.uomConversions || []) : [];
+    const effectiveFactor = getEffectiveBaseFactor(transferItem.transferUnit, conversions, baseUnit);
+    
+    const trueBaseQty = transferItem.quantity * effectiveFactor;
+    if (trueBaseQty <= 0) continue;
+
+    const key = transferItem.inventoryId.toString();
+    if (aggregatedOps.has(key)) {
+      aggregatedOps.get(key).trueBaseQty += trueBaseQty;
+    } else {
+      aggregatedOps.set(key, {
+        inventoryId: transferItem.inventoryId,
+        trueBaseQty: trueBaseQty,
+        expiryDate: transferItem.expiryDate || null,
+        manufacturingDate: transferItem.manufacturingDate || null
+      });
+    }
   }
 
-  // Process each transfer line item
-  for (const transferItem of this.lineItems) {
-    if (transferItem.baseQuantity <= 0) continue;
+  const itemsToTransfer = Array.from(aggregatedOps.values());
+  const srcOps = [];
+  const destOps = [];
 
-    const batchNumber = transferItem.batchNumber || "__LEGACY__";
-
-    // Validate warehouse has sufficient stock
-    const warehouseStock = await WarehouseStock.findOne({
-      inventoryId: transferItem.inventoryId,
-      warehouseId: this.sourceId,
-      batchNumber: batchNumber,
+  for (const item of itemsToTransfer) {
+    // Since we ignore batchNumber, we just find the FIRST stock record to deduct from.
+    // If they want exactly ONE total sum per product, we decrement the legacy batch.
+    const sourceStock = await WarehouseStock.findOne({
+      inventoryId: item.inventoryId,
+      warehouseId: this.sourceId
     }).session(session || null);
 
-    if (!warehouseStock) {
-      throw new Error(
-        `Warehouse stock not found for inventory ${transferItem.inventoryId} (batch: ${batchNumber}) in warehouse ${this.sourceId}`
-      );
+    if (!sourceStock) {
+      throw new Error(`Source stock not found for inventory ${item.inventoryId}`);
     }
 
-    const availableQty = warehouseStock.quantity || 0;
-    if (transferItem.baseQuantity > availableQty) {
-      throw new Error(
-        `Transfer quantity (${transferItem.baseQuantity}) exceeds available warehouse stock (${availableQty}) for inventory ${transferItem.inventoryId} (batch: ${batchNumber})`
-      );
+    if (item.trueBaseQty > (sourceStock.quantity || 0)) {
+      throw new Error(`Transfer quantity (${item.trueBaseQty}) exceeds available stock (${sourceStock.quantity}) for inventory ${item.inventoryId}`);
     }
 
-    // Deduct from warehouse stock atomically using $inc
-    await WarehouseStock.findOneAndUpdate(
-      {
-        inventoryId: transferItem.inventoryId,
-        warehouseId: this.sourceId,
-        batchNumber: batchNumber,
-      },
-      {
-        $inc: { quantity: -transferItem.baseQuantity }, // Negative to deduct
-        $set: { lastUpdated: new Date() },
-      },
-      {
-        session,
-        new: true,
-        runValidators: true,
+    srcOps.push({
+      updateOne: {
+        filter: { inventoryId: item.inventoryId, warehouseId: this.sourceId, batchNumber: sourceStock.batchNumber },
+        update: { $inc: { quantity: -item.trueBaseQty }, $set: { lastUpdated: new Date() } }
       }
-    );
+    });
 
-    const expiryDate =
-      transferItem.expiryDate || warehouseStock.expiryDate || null;
-    const manufacturingDate =
-      transferItem.manufacturingDate || warehouseStock.manufacturingDate || null;
-
-    // Add to storefront inventory atomically using $inc
-    await StorefrontInventory.findOneAndUpdate(
-      {
-        inventoryId: transferItem.inventoryId,
-        storefrontId: this.destinationStorefrontId,
-        batchNumber: batchNumber,
-      },
-      {
-        $inc: { quantity: transferItem.baseQuantity },
-        $set: {
-          lastUpdated: new Date(),
+    destOps.push({
+      updateOne: {
+        filter: { inventoryId: item.inventoryId, storefrontId: this.destinationStorefrontId },
+        update: {
+          $inc: { quantity: item.trueBaseQty },
+          $set: { lastUpdated: new Date() },
+          $setOnInsert: {
+            inventoryId: item.inventoryId,
+            storefrontId: this.destinationStorefrontId,
+            batchNumber: "__LEGACY__",
+            expiryDate: item.expiryDate || sourceStock.expiryDate || null,
+            manufacturingDate: item.manufacturingDate || sourceStock.manufacturingDate || null
+          }
         },
-        $setOnInsert: {
-          inventoryId: transferItem.inventoryId,
-          storefrontId: this.destinationStorefrontId,
-          batchNumber: batchNumber,
-          expiryDate: expiryDate,
-          manufacturingDate: manufacturingDate,
-          // quantity is handled by $inc - if document doesn't exist, $inc creates it with transferItem.baseQuantity
-        },
-      },
-      {
-        upsert: true,
-        session,
-        new: true,
-        runValidators: true,
+        upsert: true
       }
-    );
+    });
+  }
+
+  if (srcOps.length > 0) {
+    await WarehouseStock.bulkWrite(srcOps, { session });
+  }
+  if (destOps.length > 0) {
+    await StorefrontInventory.bulkWrite(destOps, { session });
   }
 };
 
@@ -634,108 +613,95 @@ transferSchema.methods._updateWarehouseToWarehouseStock = async function (
 ) {
   const WarehouseStock = mongoose.model("WarehouseStock");
   const LocationProfile = mongoose.model("LocationProfile");
+  const Inventory = mongoose.model("Inventory");
 
-  // Validate source warehouse exists
-  const sourceWarehouse = await LocationProfile.findOne({
-    _id: this.sourceId,
-    type: "warehouse",
-  }).session(session || null);
+  const sourceLocation = await LocationProfile.findOne({ _id: this.sourceId, type: "warehouse" }).session(session || null);
+  if (!sourceLocation) throw new Error(`Source location with ID ${this.sourceId} not found`);
 
-  if (!sourceWarehouse) {
-    throw new Error(`Source warehouse with ID ${this.sourceId} not found`);
-  }
+  const destLocation = await LocationProfile.findOne({ _id: this.destinationWarehouseId, type: "warehouse" }).session(session || null);
+  if (!destLocation) throw new Error(`Destination location with ID ${this.destinationWarehouseId} not found`);
 
-  // Validate destination warehouse exists
-  const destinationWarehouse = await LocationProfile.findOne({
-    _id: this.destinationWarehouseId,
-    type: "warehouse",
-  }).session(session || null);
+  const inventoryIds = [...new Set(this.lineItems.map(item => item.inventoryId.toString()))];
+  const products = await Inventory.find({ _id: { $in: inventoryIds } }).lean();
+  const productMap = new Map(products.map(p => [p._id.toString(), p]));
 
-  if (!destinationWarehouse) {
-    throw new Error(
-      `Destination warehouse with ID ${this.destinationWarehouseId} not found`
-    );
-  }
+  const aggregatedOps = new Map();
 
-  // Process each transfer line item
   for (const transferItem of this.lineItems) {
-    if (transferItem.baseQuantity <= 0) continue;
+    if (transferItem.quantity <= 0) continue;
 
-    const batchNumber = transferItem.batchNumber || "__LEGACY__";
+    const product = productMap.get(transferItem.inventoryId.toString());
+    const baseUnit = product ? (product.unitOfMeasure || product.uom || "") : "";
+    const conversions = product ? (product.uomConversions || []) : [];
+    const effectiveFactor = getEffectiveBaseFactor(transferItem.transferUnit, conversions, baseUnit);
+    
+    const trueBaseQty = transferItem.quantity * effectiveFactor;
+    if (trueBaseQty <= 0) continue;
 
-    // Validate warehouse has sufficient stock
-    const warehouseStock = await WarehouseStock.findOne({
-      inventoryId: transferItem.inventoryId,
-      warehouseId: this.sourceId,
-      batchNumber: batchNumber,
+    const key = transferItem.inventoryId.toString();
+    if (aggregatedOps.has(key)) {
+      aggregatedOps.get(key).trueBaseQty += trueBaseQty;
+    } else {
+      aggregatedOps.set(key, {
+        inventoryId: transferItem.inventoryId,
+        trueBaseQty: trueBaseQty,
+        expiryDate: transferItem.expiryDate || null,
+        manufacturingDate: transferItem.manufacturingDate || null
+      });
+    }
+  }
+
+  const itemsToTransfer = Array.from(aggregatedOps.values());
+  const srcOps = [];
+  const destOps = [];
+
+  for (const item of itemsToTransfer) {
+    // Since we ignore batchNumber, we just find the FIRST stock record to deduct from.
+    // If they want exactly ONE total sum per product, we decrement the legacy batch.
+    const sourceStock = await WarehouseStock.findOne({
+      inventoryId: item.inventoryId,
+      warehouseId: this.sourceId
     }).session(session || null);
 
-    if (!warehouseStock) {
-      throw new Error(
-        `Warehouse stock not found for inventory ${transferItem.inventoryId} (batch: ${batchNumber}) in source warehouse ${this.sourceId}`
-      );
+    if (!sourceStock) {
+      throw new Error(`Source stock not found for inventory ${item.inventoryId}`);
     }
 
-    const availableQty = warehouseStock.quantity || 0;
-    if (transferItem.baseQuantity > availableQty) {
-      throw new Error(
-        `Transfer quantity (${transferItem.baseQuantity}) exceeds available warehouse stock (${availableQty}) for inventory ${transferItem.inventoryId} (batch: ${batchNumber})`
-      );
+    if (item.trueBaseQty > (sourceStock.quantity || 0)) {
+      throw new Error(`Transfer quantity (${item.trueBaseQty}) exceeds available stock (${sourceStock.quantity}) for inventory ${item.inventoryId}`);
     }
 
-    // Deduct from source warehouse stock atomically using $inc
-    await WarehouseStock.findOneAndUpdate(
-      {
-        inventoryId: transferItem.inventoryId,
-        warehouseId: this.sourceId,
-        batchNumber: batchNumber,
-      },
-      {
-        $inc: { quantity: -transferItem.baseQuantity }, // Negative to deduct
-        $set: { lastUpdated: new Date() },
-      },
-      {
-        session,
-        new: true,
-        runValidators: true,
+    srcOps.push({
+      updateOne: {
+        filter: { inventoryId: item.inventoryId, warehouseId: this.sourceId, batchNumber: sourceStock.batchNumber },
+        update: { $inc: { quantity: -item.trueBaseQty }, $set: { lastUpdated: new Date() } }
       }
-    );
+    });
 
-    const expiryDate =
-      transferItem.expiryDate || warehouseStock.expiryDate || null;
-    const manufacturingDate =
-      transferItem.manufacturingDate ||
-      warehouseStock.manufacturingDate ||
-      null;
-
-    // Add to destination warehouse stock atomically using $inc with upsert
-    // Uses $setOnInsert for batch metadata fields to avoid $set vs $setOnInsert conflicts
-    await WarehouseStock.findOneAndUpdate(
-      {
-        inventoryId: transferItem.inventoryId,
-        warehouseId: this.destinationWarehouseId,
-      },
-      {
-        $inc: { quantity: transferItem.baseQuantity },
-        $set: {
-          lastUpdated: new Date(),
+    destOps.push({
+      updateOne: {
+        filter: { inventoryId: item.inventoryId, warehouseId: this.destinationWarehouseId },
+        update: {
+          $inc: { quantity: item.trueBaseQty },
+          $set: { lastUpdated: new Date() },
+          $setOnInsert: {
+            inventoryId: item.inventoryId,
+            warehouseId: this.destinationWarehouseId,
+            batchNumber: "__LEGACY__",
+            expiryDate: item.expiryDate || sourceStock.expiryDate || null,
+            manufacturingDate: item.manufacturingDate || sourceStock.manufacturingDate || null
+          }
         },
-        $setOnInsert: {
-          inventoryId: transferItem.inventoryId,
-          warehouseId: this.destinationWarehouseId,
-          batchNumber: batchNumber,
-          expiryDate: expiryDate,
-          manufacturingDate: manufacturingDate,
-          // quantity is handled by $inc - if document doesn't exist, $inc creates it with transferItem.baseQuantity
-        },
-      },
-      {
-        upsert: true,
-        session,
-        new: true,
-        runValidators: true,
+        upsert: true
       }
-    );
+    });
+  }
+
+  if (srcOps.length > 0) {
+    await WarehouseStock.bulkWrite(srcOps, { session });
+  }
+  if (destOps.length > 0) {
+    await WarehouseStock.bulkWrite(destOps, { session });
   }
 };
 
@@ -743,111 +709,98 @@ transferSchema.methods._updateWarehouseToWarehouseStock = async function (
 transferSchema.methods._updateStorefrontToWarehouseStock = async function (
   session = null
 ) {
-  const WarehouseStock = mongoose.model("WarehouseStock");
   const StorefrontInventory = mongoose.model("StorefrontInventory");
+  const WarehouseStock = mongoose.model("WarehouseStock");
   const LocationProfile = mongoose.model("LocationProfile");
+  const Inventory = mongoose.model("Inventory");
 
-  // Validate source storefront exists
-  const sourceStorefront = await LocationProfile.findOne({
-    _id: this.sourceId,
-    type: "storefront",
-  }).session(session || null);
+  const sourceLocation = await LocationProfile.findOne({ _id: this.sourceId, type: "storefront" }).session(session || null);
+  if (!sourceLocation) throw new Error(`Source location with ID ${this.sourceId} not found`);
 
-  if (!sourceStorefront) {
-    throw new Error(`Source storefront with ID ${this.sourceId} not found`);
-  }
+  const destLocation = await LocationProfile.findOne({ _id: this.destinationWarehouseId, type: "warehouse" }).session(session || null);
+  if (!destLocation) throw new Error(`Destination location with ID ${this.destinationWarehouseId} not found`);
 
-  // Validate destination warehouse exists
-  const destinationWarehouse = await LocationProfile.findOne({
-    _id: this.destinationWarehouseId,
-    type: "warehouse",
-  }).session(session || null);
+  const inventoryIds = [...new Set(this.lineItems.map(item => item.inventoryId.toString()))];
+  const products = await Inventory.find({ _id: { $in: inventoryIds } }).lean();
+  const productMap = new Map(products.map(p => [p._id.toString(), p]));
 
-  if (!destinationWarehouse) {
-    throw new Error(
-      `Destination warehouse with ID ${this.destinationWarehouseId} not found`
-    );
-  }
+  const aggregatedOps = new Map();
 
-  // Process each transfer line item
   for (const transferItem of this.lineItems) {
-    if (transferItem.baseQuantity <= 0) continue;
+    if (transferItem.quantity <= 0) continue;
 
-    const batchNumber = transferItem.batchNumber || "__LEGACY__";
+    const product = productMap.get(transferItem.inventoryId.toString());
+    const baseUnit = product ? (product.unitOfMeasure || product.uom || "") : "";
+    const conversions = product ? (product.uomConversions || []) : [];
+    const effectiveFactor = getEffectiveBaseFactor(transferItem.transferUnit, conversions, baseUnit);
+    
+    const trueBaseQty = transferItem.quantity * effectiveFactor;
+    if (trueBaseQty <= 0) continue;
 
-    // Validate storefront has sufficient stock
-    const storefrontStock = await StorefrontInventory.findOne({
-      inventoryId: transferItem.inventoryId,
-      storefrontId: this.sourceId,
-      batchNumber: batchNumber,
+    const key = transferItem.inventoryId.toString();
+    if (aggregatedOps.has(key)) {
+      aggregatedOps.get(key).trueBaseQty += trueBaseQty;
+    } else {
+      aggregatedOps.set(key, {
+        inventoryId: transferItem.inventoryId,
+        trueBaseQty: trueBaseQty,
+        expiryDate: transferItem.expiryDate || null,
+        manufacturingDate: transferItem.manufacturingDate || null
+      });
+    }
+  }
+
+  const itemsToTransfer = Array.from(aggregatedOps.values());
+  const srcOps = [];
+  const destOps = [];
+
+  for (const item of itemsToTransfer) {
+    // Since we ignore batchNumber, we just find the FIRST stock record to deduct from.
+    // If they want exactly ONE total sum per product, we decrement the legacy batch.
+    const sourceStock = await StorefrontInventory.findOne({
+      inventoryId: item.inventoryId,
+      storefrontId: this.sourceId
     }).session(session || null);
 
-    if (!storefrontStock) {
-      throw new Error(
-        `Storefront stock not found for inventory ${transferItem.inventoryId} (batch: ${batchNumber}) in storefront ${this.sourceId}`
-      );
+    if (!sourceStock) {
+      throw new Error(`Source stock not found for inventory ${item.inventoryId}`);
     }
 
-    const availableQty = storefrontStock.quantity || 0;
-    if (transferItem.baseQuantity > availableQty) {
-      throw new Error(
-        `Transfer quantity (${transferItem.baseQuantity}) exceeds available storefront stock (${availableQty}) for inventory ${transferItem.inventoryId} (batch: ${batchNumber})`
-      );
+    if (item.trueBaseQty > (sourceStock.quantity || 0)) {
+      throw new Error(`Transfer quantity (${item.trueBaseQty}) exceeds available stock (${sourceStock.quantity}) for inventory ${item.inventoryId}`);
     }
 
-    // Deduct from storefront stock atomically using $inc
-    await StorefrontInventory.findOneAndUpdate(
-      {
-        inventoryId: transferItem.inventoryId,
-        storefrontId: this.sourceId,
-        batchNumber: batchNumber,
-      },
-      {
-        $inc: { quantity: -transferItem.baseQuantity }, // Negative to deduct
-        $set: { lastUpdated: new Date() },
-      },
-      {
-        session,
-        new: true,
-        runValidators: true,
+    srcOps.push({
+      updateOne: {
+        filter: { inventoryId: item.inventoryId, storefrontId: this.sourceId, batchNumber: sourceStock.batchNumber },
+        update: { $inc: { quantity: -item.trueBaseQty }, $set: { lastUpdated: new Date() } }
       }
-    );
+    });
 
-    const expiryDate =
-      transferItem.expiryDate || storefrontStock.expiryDate || null;
-    const manufacturingDate =
-      transferItem.manufacturingDate ||
-      storefrontStock.manufacturingDate ||
-      null;
-
-    // Add to destination warehouse stock atomically using $inc with upsert
-    // Uses $setOnInsert for batch metadata fields to avoid $set vs $setOnInsert conflicts
-    await WarehouseStock.findOneAndUpdate(
-      {
-        inventoryId: transferItem.inventoryId,
-        warehouseId: this.destinationWarehouseId,
-      },
-      {
-        $inc: { quantity: transferItem.baseQuantity },
-        $set: {
-          lastUpdated: new Date(),
+    destOps.push({
+      updateOne: {
+        filter: { inventoryId: item.inventoryId, warehouseId: this.destinationWarehouseId },
+        update: {
+          $inc: { quantity: item.trueBaseQty },
+          $set: { lastUpdated: new Date() },
+          $setOnInsert: {
+            inventoryId: item.inventoryId,
+            warehouseId: this.destinationWarehouseId,
+            batchNumber: "__LEGACY__",
+            expiryDate: item.expiryDate || sourceStock.expiryDate || null,
+            manufacturingDate: item.manufacturingDate || sourceStock.manufacturingDate || null
+          }
         },
-        $setOnInsert: {
-          inventoryId: transferItem.inventoryId,
-          warehouseId: this.destinationWarehouseId,
-          batchNumber: batchNumber,
-          expiryDate: expiryDate,
-          manufacturingDate: manufacturingDate,
-          // quantity is handled by $inc - if document doesn't exist, $inc creates it with transferItem.baseQuantity
-        },
-      },
-      {
-        upsert: true,
-        session,
-        new: true,
-        runValidators: true,
+        upsert: true
       }
-    );
+    });
+  }
+
+  if (srcOps.length > 0) {
+    await StorefrontInventory.bulkWrite(srcOps, { session });
+  }
+  if (destOps.length > 0) {
+    await WarehouseStock.bulkWrite(destOps, { session });
   }
 };
 
@@ -857,109 +810,95 @@ transferSchema.methods._updateStorefrontToStorefrontStock = async function (
 ) {
   const StorefrontInventory = mongoose.model("StorefrontInventory");
   const LocationProfile = mongoose.model("LocationProfile");
+  const Inventory = mongoose.model("Inventory");
 
-  // Validate source storefront exists
-  const sourceStorefront = await LocationProfile.findOne({
-    _id: this.sourceId,
-    type: "storefront",
-  }).session(session || null);
+  const sourceLocation = await LocationProfile.findOne({ _id: this.sourceId, type: "storefront" }).session(session || null);
+  if (!sourceLocation) throw new Error(`Source location with ID ${this.sourceId} not found`);
 
-  if (!sourceStorefront) {
-    throw new Error(`Source storefront with ID ${this.sourceId} not found`);
-  }
+  const destLocation = await LocationProfile.findOne({ _id: this.destinationStorefrontId, type: "storefront" }).session(session || null);
+  if (!destLocation) throw new Error(`Destination location with ID ${this.destinationStorefrontId} not found`);
 
-  // Validate destination storefront exists
-  const destinationStorefront = await LocationProfile.findOne({
-    _id: this.destinationStorefrontId,
-    type: "storefront",
-  }).session(session || null);
+  const inventoryIds = [...new Set(this.lineItems.map(item => item.inventoryId.toString()))];
+  const products = await Inventory.find({ _id: { $in: inventoryIds } }).lean();
+  const productMap = new Map(products.map(p => [p._id.toString(), p]));
 
-  if (!destinationStorefront) {
-    throw new Error(
-      `Destination storefront with ID ${this.destinationStorefrontId} not found`
-    );
-  }
+  const aggregatedOps = new Map();
 
-  // Process each transfer line item
   for (const transferItem of this.lineItems) {
-    if (transferItem.baseQuantity <= 0) continue;
+    if (transferItem.quantity <= 0) continue;
 
-    const batchNumber = transferItem.batchNumber || "__LEGACY__";
+    const product = productMap.get(transferItem.inventoryId.toString());
+    const baseUnit = product ? (product.unitOfMeasure || product.uom || "") : "";
+    const conversions = product ? (product.uomConversions || []) : [];
+    const effectiveFactor = getEffectiveBaseFactor(transferItem.transferUnit, conversions, baseUnit);
+    
+    const trueBaseQty = transferItem.quantity * effectiveFactor;
+    if (trueBaseQty <= 0) continue;
 
-    // Validate source storefront has sufficient stock
-    const storefrontStock = await StorefrontInventory.findOne({
-      inventoryId: transferItem.inventoryId,
-      storefrontId: this.sourceId,
-      batchNumber: batchNumber,
+    const key = transferItem.inventoryId.toString();
+    if (aggregatedOps.has(key)) {
+      aggregatedOps.get(key).trueBaseQty += trueBaseQty;
+    } else {
+      aggregatedOps.set(key, {
+        inventoryId: transferItem.inventoryId,
+        trueBaseQty: trueBaseQty,
+        expiryDate: transferItem.expiryDate || null,
+        manufacturingDate: transferItem.manufacturingDate || null
+      });
+    }
+  }
+
+  const itemsToTransfer = Array.from(aggregatedOps.values());
+  const srcOps = [];
+  const destOps = [];
+
+  for (const item of itemsToTransfer) {
+    // Since we ignore batchNumber, we just find the FIRST stock record to deduct from.
+    // If they want exactly ONE total sum per product, we decrement the legacy batch.
+    const sourceStock = await StorefrontInventory.findOne({
+      inventoryId: item.inventoryId,
+      storefrontId: this.sourceId
     }).session(session || null);
 
-    if (!storefrontStock) {
-      throw new Error(
-        `Storefront stock not found for inventory ${transferItem.inventoryId} (batch: ${batchNumber}) in source storefront ${this.sourceId}`
-      );
+    if (!sourceStock) {
+      throw new Error(`Source stock not found for inventory ${item.inventoryId}`);
     }
 
-    const availableQty = storefrontStock.quantity || 0;
-    if (transferItem.baseQuantity > availableQty) {
-      throw new Error(
-        `Transfer quantity (${transferItem.baseQuantity}) exceeds available storefront stock (${availableQty}) for inventory ${transferItem.inventoryId} (batch: ${batchNumber})`
-      );
+    if (item.trueBaseQty > (sourceStock.quantity || 0)) {
+      throw new Error(`Transfer quantity (${item.trueBaseQty}) exceeds available stock (${sourceStock.quantity}) for inventory ${item.inventoryId}`);
     }
 
-    // Deduct from source storefront stock atomically using $inc
-    await StorefrontInventory.findOneAndUpdate(
-      {
-        inventoryId: transferItem.inventoryId,
-        storefrontId: this.sourceId,
-        batchNumber: batchNumber,
-      },
-      {
-        $inc: { quantity: -transferItem.baseQuantity }, // Negative to deduct
-        $set: { lastUpdated: new Date() },
-      },
-      {
-        session,
-        new: true,
-        runValidators: true,
+    srcOps.push({
+      updateOne: {
+        filter: { inventoryId: item.inventoryId, storefrontId: this.sourceId, batchNumber: sourceStock.batchNumber },
+        update: { $inc: { quantity: -item.trueBaseQty }, $set: { lastUpdated: new Date() } }
       }
-    );
+    });
 
-    const expiryDate =
-      transferItem.expiryDate || storefrontStock.expiryDate || null;
-    const manufacturingDate =
-      transferItem.manufacturingDate ||
-      storefrontStock.manufacturingDate ||
-      null;
-
-    // Add to destination storefront stock atomically using $inc with upsert
-    // Uses $setOnInsert for batch metadata fields to avoid $set vs $setOnInsert conflicts
-    await StorefrontInventory.findOneAndUpdate(
-      {
-        inventoryId: transferItem.inventoryId,
-        storefrontId: this.destinationStorefrontId,
-        batchNumber: batchNumber,
-      },
-      {
-        $inc: { quantity: transferItem.baseQuantity },
-        $set: {
-          lastUpdated: new Date(),
+    destOps.push({
+      updateOne: {
+        filter: { inventoryId: item.inventoryId, storefrontId: this.destinationStorefrontId },
+        update: {
+          $inc: { quantity: item.trueBaseQty },
+          $set: { lastUpdated: new Date() },
+          $setOnInsert: {
+            inventoryId: item.inventoryId,
+            storefrontId: this.destinationStorefrontId,
+            batchNumber: "__LEGACY__",
+            expiryDate: item.expiryDate || sourceStock.expiryDate || null,
+            manufacturingDate: item.manufacturingDate || sourceStock.manufacturingDate || null
+          }
         },
-        $setOnInsert: {
-          inventoryId: transferItem.inventoryId,
-          storefrontId: this.destinationStorefrontId,
-          batchNumber: batchNumber,
-          expiryDate: expiryDate,
-          manufacturingDate: manufacturingDate,
-          // quantity is handled by $inc - if document doesn't exist, $inc creates it with transferItem.baseQuantity
-        },
-      },
-      {
-        upsert: true,
-        session,
-        new: true,
-        runValidators: true,
+        upsert: true
       }
-    );
+    });
+  }
+
+  if (srcOps.length > 0) {
+    await StorefrontInventory.bulkWrite(srcOps, { session });
+  }
+  if (destOps.length > 0) {
+    await StorefrontInventory.bulkWrite(destOps, { session });
   }
 };
 
