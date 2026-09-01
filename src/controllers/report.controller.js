@@ -3,6 +3,7 @@ import WarehouseStock from "../models/warehouse.model.js";
 import StorefrontInventory from "../models/storefrontInventory.model.js";
 import { asyncErrorHandler } from "../utils/asyncErrorHandler.js";
 import CustomError from "../utils/customError.js";
+import { getEffectiveBaseFactor } from "../utils/uom.utils.js";
 
 // ─── Helper ───────────────────────────────────────────────────────────────────
 /**
@@ -177,19 +178,23 @@ export const getPurchaseProductReport = asyncErrorHandler(
       {
         $group: {
           _id: "$products.inventoryId",
-          quantityPurchased: { $sum: "$products.purchaseQuantity" },
+          items: {
+            $push: {
+              purchaseUnit: "$products.purchaseUnit",
+              purchaseQuantity: "$products.purchaseQuantity",
+            }
+          },
           totalCost: {
             $sum: {
               $multiply: [
                 "$products.purchaseQuantity",
-                "$products.buyingPrice",
+                "$products.purchaseUnitPrice",
               ],
             },
           },
           orderCount: { $sum: 1 },
         },
       },
-      { $sort: { quantityPurchased: -1 } },
       // Lookup product details from Inventory collection
       {
         $lookup: {
@@ -208,25 +213,48 @@ export const getPurchaseProductReport = asyncErrorHandler(
           productCode: { $ifNull: ["$product.productCode", "N/A"] },
           category: { $ifNull: ["$product.category", "N/A"] },
           unitOfMeasure: { $ifNull: ["$product.unitOfMeasure", "N/A"] },
-          quantityPurchased: 1,
+          uomConversions: "$product.uomConversions",
+          items: 1,
           totalCost: 1,
           orderCount: 1,
         },
       },
     ];
 
+    const productsAgg = await Purchasing.aggregate(pipeline);
+
+    // Calculate true base quantity and sort in JS
+    let formattedProducts = productsAgg.map(p => {
+       let trueQty = 0;
+       for (const item of p.items) {
+          const factor = getEffectiveBaseFactor(item.purchaseUnit, p.uomConversions, p.unitOfMeasure);
+          trueQty += (item.purchaseQuantity || 0) * factor;
+       }
+       return {
+          productId: p.productId,
+          productName: p.productName,
+          productCode: p.productCode,
+          category: p.category,
+          unitOfMeasure: p.unitOfMeasure,
+          quantityPurchased: trueQty,
+          totalCost: p.totalCost,
+          orderCount: p.orderCount,
+       };
+    });
+
+    // Sort by quantityPurchased DESC
+    formattedProducts.sort((a, b) => b.quantityPurchased - a.quantityPurchased);
+
     // Apply limit if provided
     const limitNum = parseInt(limit);
     if (!isNaN(limitNum) && limitNum > 0) {
-      pipeline.push({ $limit: limitNum });
+      formattedProducts = formattedProducts.slice(0, limitNum);
     }
-
-    const products = await Purchasing.aggregate(pipeline);
 
     res.status(200).json({
       success: true,
       message: "Product purchase report retrieved successfully",
-      data: products,
+      data: formattedProducts,
     });
   },
 );

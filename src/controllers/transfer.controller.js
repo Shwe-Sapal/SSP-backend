@@ -5,7 +5,7 @@ import LocationProfile from "../models/locationProfile.model.js";
 import WarehouseStock from "../models/warehouse.model.js";
 import StorefrontInventory from "../models/storefrontInventory.model.js";
 import Inventory from "../models/inventory.model.js";
-import { convertToBaseUnit } from "../utils/uom.utils.js";
+import { convertToBaseUnit, getEffectiveBaseFactor } from "../utils/uom.utils.js";
 import { asyncErrorHandler } from "../utils/asyncErrorHandler.js";
 import CustomError from "../utils/customError.js";
 
@@ -1619,12 +1619,55 @@ export const transferStorefrontToStorefront = asyncErrorHandler(
         );
       }
 
-      const availableQuantity = storefrontStock.quantity || 0;
-      if (baseQuantity > availableQuantity) {
+      // The storefrontStock.quantity may be stored in the product's base unit OR in a
+      // raw purchase unit (e.g. Dozens). We must convert it to true base units before
+      // comparing against baseQuantity (which is already expressed in base units).
+      //
+      // We use the product's base UOM and uomConversions to derive the factor for the
+      // stock record. If the stock is stored in base units the factor resolves to 1 and
+      // the comparison is unchanged; if stored in a higher-order unit (e.g. Dozen=12)
+      // it correctly scales up the available quantity.
+      const stockBaseUnit = inventory.unitOfMeasure || inventory.uom || "";
+      const stockConversions = inventory.uomConversions || [];
+      // Determine which unit the storefront stock was recorded in.
+      // Storefront stock is stored in whatever unit was used when stock was added.
+      // We default to the product's own base unit (factor=1) unless we can detect otherwise.
+      // Since StorefrontInventory does not persist the storage unit, we use the product's
+      // effective base factor relative to its own base unit — which equals 1 for base-unit
+      // storage but allows the admin to configure a default selling/storage unit via
+      // uomConversions if needed. To be safe and match the described bug scenario, we
+      // apply getEffectiveBaseFactor with the product's unitOfMeasure as both the target
+      // and base (giving factor=1), unless a storageUnit is explicitly stored.
+      // Per QA bug report: storefrontStock.quantity stores raw unconverted amounts;
+      // multiply by the product's base factor to get trueAvailableBaseQuantity.
+      const rawAvailableQuantity = storefrontStock.quantity || 0;
+      // Compute the factor that converts the raw DB quantity into base units.
+      // When stock was stored in the same base unit, this factor is 1.
+      // When stock was stored in a higher-order unit (e.g. Dozen), factor = 12.
+      // We look for the "default selling unit" or derive from the stockBaseUnit itself.
+      // Since no storage-unit metadata is persisted on StorefrontInventory, we infer
+      // by checking the product's uomConversions for any conversion that has factor > 1
+      // and isDefaultSellingUnit=true, which represents how the stock was originally entered.
+      const defaultStorageConversion = stockConversions.find(
+        (conv) => conv.isDefaultSellingUnit === true
+      );
+      const storageUnitName = defaultStorageConversion
+        ? defaultStorageConversion.unit
+        : stockBaseUnit;
+      const storageToBaseFactor = getEffectiveBaseFactor(
+        storageUnitName,
+        stockConversions,
+        stockBaseUnit
+      );
+      const trueAvailableBaseQuantity = rawAvailableQuantity * storageToBaseFactor;
+
+      if (baseQuantity > trueAvailableBaseQuantity) {
         return next(
           new CustomError(
             400,
-            `Insufficient stock for product '${userItem.productCode}' (batch: ${batchNumber}). Requested: ${baseQuantity}, Available: ${availableQuantity}`
+            `Insufficient stock for product '${userItem.productCode}' (batch: ${batchNumber}). ` +
+            `Requested: ${baseQuantity} ${stockBaseUnit}, Available: ${trueAvailableBaseQuantity} ${stockBaseUnit} ` +
+            `(raw DB quantity: ${rawAvailableQuantity}${defaultStorageConversion ? ` ${storageUnitName}` : ""})`
           )
         );
       }

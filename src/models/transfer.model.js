@@ -864,22 +864,70 @@ transferSchema.methods._updateStorefrontToStorefrontStock = async function (
       throw new Error(`Source stock not found for inventory ${item.inventoryId}`);
     }
 
-    if (item.trueBaseQty > (sourceStock.quantity || 0)) {
-      throw new Error(`Transfer quantity (${item.trueBaseQty}) exceeds available stock (${sourceStock.quantity}) for inventory ${item.inventoryId}`);
+    // -------------------------------------------------------------------------
+    // UOM-aware stock validation
+    // -------------------------------------------------------------------------
+    // `item.trueBaseQty` is already expressed in the product's base unit.
+    // `sourceStock.quantity` may be stored as a raw amount in a higher-order unit
+    // (e.g. 11 Dozens instead of 132 pieces). We must convert it to true base
+    // units before comparing to avoid false "insufficient stock" errors.
+    //
+    // We derive the storageToBaseFactor by inspecting the product's UOM conversions:
+    //   • If the product has a default selling/storage unit (isDefaultSellingUnit=true),
+    //     we use that unit's factor as the raw-to-base multiplier.
+    //   • Otherwise we assume the DB stores base units (factor = 1).
+    const product = productMap.get(item.inventoryId.toString());
+    const productBaseUnit = product ? (product.unitOfMeasure || product.uom || "") : "";
+    const productConversions = product ? (product.uomConversions || []) : [];
+
+    const defaultStorageConversion = productConversions.find(
+      (conv) => conv.isDefaultSellingUnit === true
+    );
+    const storageUnitName = defaultStorageConversion
+      ? defaultStorageConversion.unit
+      : productBaseUnit;
+    const storageToBaseFactor = getEffectiveBaseFactor(
+      storageUnitName,
+      productConversions,
+      productBaseUnit
+    );
+
+    const rawAvailableQty = sourceStock.quantity || 0;
+    const trueAvailableBaseQty = rawAvailableQty * storageToBaseFactor;
+
+    if (item.trueBaseQty > trueAvailableBaseQty) {
+      throw new Error(
+        `Transfer quantity (${item.trueBaseQty} ${productBaseUnit}) exceeds available stock ` +
+        `(${trueAvailableBaseQty} ${productBaseUnit}, raw DB: ${rawAvailableQty}${defaultStorageConversion ? ` ${storageUnitName}` : ""}) ` +
+        `for inventory ${item.inventoryId}`
+      );
     }
+
+    // Compute how many raw storage units to deduct from the source record.
+    // If stored in base units (factor=1), rawDeduction === trueBaseQty.
+    // If stored in dozens (factor=12), rawDeduction = trueBaseQty / 12.
+    const rawDeduction = storageToBaseFactor > 1
+      ? item.trueBaseQty / storageToBaseFactor
+      : item.trueBaseQty;
 
     srcOps.push({
       updateOne: {
         filter: { inventoryId: item.inventoryId, storefrontId: this.sourceId, batchNumber: sourceStock.batchNumber },
-        update: { $inc: { quantity: -item.trueBaseQty }, $set: { lastUpdated: new Date() } }
+        update: { $inc: { quantity: -rawDeduction }, $set: { lastUpdated: new Date() } }
       }
     });
+
+    // The destination receives `trueBaseQty` expressed in the SAME storage unit
+    // as the destination's existing records. Convert back to raw storage units.
+    const rawAddition = storageToBaseFactor > 1
+      ? item.trueBaseQty / storageToBaseFactor
+      : item.trueBaseQty;
 
     destOps.push({
       updateOne: {
         filter: { inventoryId: item.inventoryId, storefrontId: this.destinationStorefrontId },
         update: {
-          $inc: { quantity: item.trueBaseQty },
+          $inc: { quantity: rawAddition },
           $set: { lastUpdated: new Date() },
           $setOnInsert: {
             inventoryId: item.inventoryId,

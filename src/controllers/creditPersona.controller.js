@@ -10,6 +10,12 @@ export const createCreditPerson = asyncErrorHandler(async (req, res, next) => {
     return next(new CustomError(400, "Name and phone are required"));
   }
 
+  // Check for duplicate phone number
+  const existingPerson = await CreditPerson.findOne({ phone: phone.trim() });
+  if (existingPerson) {
+    return next(new CustomError(400, "A customer with this phone number already exists."));
+  }
+
   const creditPerson = await CreditPerson.create({ name, phone, address, township });
   res.status(201).json({
     success: true,
@@ -42,6 +48,17 @@ export const updateCreditPerson = asyncErrorHandler(async (req, res, next) => {
   const { name, phone, address, township, blacklist } = req.body;
   if (!mongoose.Types.ObjectId.isValid(id)) {
     return next(new CustomError(400, "Invalid credit person ID format"));
+  }
+
+  // Check for duplicate phone number (exclude current document)
+  if (phone) {
+    const existingPerson = await CreditPerson.findOne({
+      phone: phone.trim(),
+      _id: { $ne: id },
+    });
+    if (existingPerson) {
+      return next(new CustomError(400, "A customer with this phone number already exists."));
+    }
   }
 
   const updateData = { name, phone, address, township };

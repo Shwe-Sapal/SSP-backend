@@ -291,7 +291,10 @@ export const getPurchaseById = asyncErrorHandler(async (req, res, next) => {
   const purchase = await Purchasing.findOne(query).populate(
     "purchasedBy",
     "name role"
-  );
+  ).populate({
+    path: "products.inventoryId",
+    select: "unitOfMeasure uomConversions"
+  });
 
   if (!purchase) {
     return next(new CustomError(404, "Purchase not found"));
@@ -314,12 +317,12 @@ export const updatePurchaseStatus = asyncErrorHandler(
       return next(new CustomError(400, "Invalid purchase order ID format"));
     }
 
-    if (!status) {
-      return next(new CustomError(400, "Status is required"));
+    if (!status && dueDate === undefined) {
+      return next(new CustomError(400, "Status or Due Date is required to update"));
     }
 
     const validStatuses = ["pending", "confirmed", "arrived", "cancelled"];
-    if (!validStatuses.includes(status)) {
+    if (status && !validStatuses.includes(status)) {
       return next(
         new CustomError(
           400,
@@ -345,10 +348,13 @@ export const updatePurchaseStatus = asyncErrorHandler(
       );
     }
 
-    // Update the status and optionally dueDate
-    const updateData = { status };
+    // Update the status and/or dueDate
+    const updateData = {};
+    if (status !== undefined) {
+      updateData.status = status;
+    }
     if (dueDate !== undefined) {
-      updateData.dueDate = dueDate;
+      updateData.dueDate = dueDate || null;
     }
 
     const purchase = await Purchasing.findOneAndUpdate(
