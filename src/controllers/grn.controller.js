@@ -130,24 +130,27 @@ export const createGRN = asyncErrorHandler(async (req, res, next) => {
     for (const userItem of lineItems) {
       const productCodeUpper = userItem.productCode.toUpperCase();
 
-      // Find the corresponding PO product
-      let poProduct = null;
+      // Find all corresponding PO products (since we are aggregating by product code)
+      let matchingPoProducts = [];
       if (userItem.poLineItemId) {
-        poProduct = purchaseOrder.products.find(
+        matchingPoProducts = purchaseOrder.products.filter(
           (p) => p._id.toString() === userItem.poLineItemId.toString()
         );
       } else {
-        poProduct = purchaseOrder.products.find(
+        matchingPoProducts = purchaseOrder.products.filter(
           (p) => p.productCode.toUpperCase() === productCodeUpper
         );
       }
 
-      if (!poProduct) {
+      if (matchingPoProducts.length === 0) {
         throw new CustomError(
           400,
           `Product with productCode '${userItem.productCode}' ${userItem.poLineItemId ? `(line ID: ${userItem.poLineItemId})` : ""} not found in purchase order.`
         );
       }
+      
+      // Use the first one for general reference like cost price or product code
+      const poProduct = matchingPoProducts[0];
 
       const inventoryItem = inventoryMapByCode.get(productCodeUpper);
       if (!inventoryItem) {
@@ -203,25 +206,26 @@ export const createGRN = asyncErrorHandler(async (req, res, next) => {
         receivedQuantity = calculatedReceivedQuantity;
       }
 
-      const poPurchaseQuantity = poProduct.purchaseQuantity || 0;
-      const poReceivedQuantity = poProduct.receivedQuantity || 0;
-      const remainingQuantity = poPurchaseQuantity - poReceivedQuantity;
-
-      // Convert remaining PO quantity (in purchase units) to base units for comparison,
-      // since the incoming receivedQuantity from the frontend is already in base units.
-      const purchaseUnitForConversion = poProduct.purchaseUnit || userItem.receivedUnit;
-      let remainingInBaseUnits;
-      try {
-        remainingInBaseUnits = convertToBaseUnit(inventoryItem, purchaseUnitForConversion, remainingQuantity);
-      } catch {
-        // If conversion fails (e.g., same unit), fall back to raw remaining quantity
-        remainingInBaseUnits = remainingQuantity;
+      // Calculate total remaining across all matching PO products in base units
+      let totalRemainingInBaseUnits = 0;
+      for (const p of matchingPoProducts) {
+        const poPurchaseQuantity = p.purchaseQuantity || 0;
+        const poReceivedQuantity = p.receivedQuantity || 0;
+        const remainingQuantity = poPurchaseQuantity - poReceivedQuantity;
+        if (remainingQuantity > 0) {
+          const purchaseUnitForConversion = p.purchaseUnit || userItem.receivedUnit;
+          try {
+            totalRemainingInBaseUnits += convertToBaseUnit(inventoryItem, purchaseUnitForConversion, remainingQuantity);
+          } catch {
+            totalRemainingInBaseUnits += remainingQuantity;
+          }
+        }
       }
 
-      if (receivedQuantity > remainingInBaseUnits) {
+      if (receivedQuantity > totalRemainingInBaseUnits) {
         throw new CustomError(
           400,
-          `Received quantity (${receivedQuantity}) for product '${poProduct.productCode}' (${purchaseUnitForConversion}) exceeds remaining purchase order quantity (${remainingInBaseUnits} in base units).`
+          `Received quantity (${receivedQuantity}) for product '${poProduct.productCode}' exceeds remaining purchase order quantity (${totalRemainingInBaseUnits} in base units).`
         );
       }
 
@@ -338,52 +342,68 @@ export const createGRN = asyncErrorHandler(async (req, res, next) => {
     const savedGRN = newGRN[0];
 
     // Update PO quantities
-    // The PO stores quantities in purchase units, so we need to convert
-    // the received base-unit quantity back to purchase units before updating.
+    // Since the incoming receivedQuantity is in base units and might fulfill multiple PO line items,
+    // we need to distribute it across the matching PO line items.
     for (const grnLineItem of grnLineItems) {
-      // Find the matching PO product to get its purchaseUnit
-      const matchingPoProduct = purchaseOrder.products.find((p) =>
+      // Find all matching PO products for this product code
+      const matchingPoProducts = purchaseOrder.products.filter((p) =>
         grnLineItem.poLineItemId
           ? p._id.toString() === grnLineItem.poLineItemId.toString()
           : p.inventoryId.toString() === grnLineItem.inventoryId.toString()
       );
-      const poUnit = matchingPoProduct?.purchaseUnit || grnLineItem.receivedUnit;
+
       const invItem = inventoryMapByCode.get(
-        matchingPoProduct?.productCode?.toUpperCase()
+        matchingPoProducts[0]?.productCode?.toUpperCase()
       );
 
-      // Convert receivedQuantity (base units) back to purchase units for PO update
-      let qtyInPurchaseUnit = grnLineItem.receivedQuantity;
-      if (invItem && poUnit) {
-        try {
-          const factor = convertToBaseUnit(invItem, poUnit, 1); // get factor for 1 purchase unit
-          if (factor > 0) {
-            qtyInPurchaseUnit = grnLineItem.receivedQuantity / factor;
+      let remainingBaseReceived = grnLineItem.receivedQuantity;
+
+      for (const p of matchingPoProducts) {
+        if (remainingBaseReceived <= 0) break;
+
+        const poPurchaseQuantity = p.purchaseQuantity || 0;
+        const poReceivedQuantity = p.receivedQuantity || 0;
+        const remainingQuantity = poPurchaseQuantity - poReceivedQuantity;
+        
+        if (remainingQuantity <= 0) continue;
+
+        const poUnit = p.purchaseUnit || grnLineItem.receivedUnit;
+        
+        // Convert remaining PO line item quantity to base units
+        let remainingInBaseUnits = remainingQuantity;
+        let factor = 1;
+        if (invItem && poUnit) {
+          try {
+            factor = convertToBaseUnit(invItem, poUnit, 1);
+            if (factor > 0) {
+              remainingInBaseUnits = remainingQuantity * factor;
+            }
+          } catch {
+            factor = 1;
           }
-        } catch {
-          // If conversion fails, use receivedQuantity as-is (same unit scenario)
         }
-      }
 
-      const poUpdateFilter = {
-        _id: purchasingId,
-      };
+        // Determine how much base quantity to allocate to this PO line item
+        const allocatedBaseQty = Math.min(remainingBaseReceived, remainingInBaseUnits);
+        
+        // Convert allocated base quantity back to purchase units
+        const allocatedPurchaseQty = factor > 0 ? allocatedBaseQty / factor : allocatedBaseQty;
 
-      if (grnLineItem.poLineItemId) {
-        poUpdateFilter["products._id"] = grnLineItem.poLineItemId;
-      } else {
-        poUpdateFilter["products.inventoryId"] = grnLineItem.inventoryId;
-      }
-
-      await Purchasing.updateOne(
-        poUpdateFilter,
-        {
-          $inc: {
-            "products.$.receivedQuantity": qtyInPurchaseUnit,
+        await Purchasing.updateOne(
+          {
+            _id: purchasingId,
+            "products._id": p._id,
           },
-        },
-        { session }
-      );
+          {
+            $inc: {
+              "products.$.receivedQuantity": allocatedPurchaseQty,
+            },
+          },
+          { session }
+        );
+
+        remainingBaseReceived -= allocatedBaseQty;
+      }
     }
 
     const updatedPO = await Purchasing.findById(purchasingId).session(session).lean();
