@@ -236,6 +236,12 @@ export const getPurchaseProductReport = asyncErrorHandler(
           productCode: p.productCode,
           category: p.category,
           unitOfMeasure: p.unitOfMeasure,
+          // baseUnit is the smallest tracked unit (e.g. "piece").
+          // Included so the frontend can label quantityPurchased correctly.
+          baseUnit: p.unitOfMeasure,
+          // uomConversions lets the frontend break a raw base-unit total
+          // into larger units (e.g. 14 pieces → 1 dozen + 2 pieces).
+          uomConversions: p.uomConversions || [],
           quantityPurchased: trueQty,
           totalCost: p.totalCost,
           orderCount: p.orderCount,

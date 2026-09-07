@@ -767,7 +767,10 @@ export const updateWholePurchase = asyncErrorHandler(async (req, res, next) => {
       }
     }
 
-    // Extract all inventory IDs for batch fetching
+    // Extract all inventory IDs for batch fetching.
+    // Guard against the frontend sending a fully-populated object instead of a
+    // plain ID string — naively calling .toString() on an object yields the
+    // useless string "[object Object]" and causes a guaranteed 404.
     const inventoryIds = products.map((item) => {
       if (!item.inventoryId || item.purchaseQuantity === undefined) {
         throw new CustomError(
@@ -775,7 +778,11 @@ export const updateWholePurchase = asyncErrorHandler(async (req, res, next) => {
           `Product must have inventoryId and purchaseQuantity`
         );
       }
-      return item.inventoryId;
+      // Normalise: plain string / ObjectId → use as-is; populated object → extract ._id
+      const rawId = item.inventoryId;
+      return (rawId !== null && typeof rawId === "object" && !rawId._bsontype)
+        ? (rawId._id || rawId.id || rawId)
+        : rawId;
     });
 
     // Batch fetch all inventory items
@@ -789,11 +796,17 @@ export const updateWholePurchase = asyncErrorHandler(async (req, res, next) => {
 
     // Build the new products array
     const productsWithDetails = products.map((item) => {
-      const inventoryItem = inventoryMap.get(item.inventoryId.toString());
+      // Apply the same normalisation used during the batch-fetch above so the
+      // map key always resolves to a plain ID string.
+      const rawId = item.inventoryId;
+      const normalizedId = (rawId !== null && typeof rawId === "object" && !rawId._bsontype)
+        ? (rawId._id || rawId.id || rawId)
+        : rawId;
+      const inventoryItem = inventoryMap.get(normalizedId.toString());
       if (!inventoryItem) {
         throw new CustomError(
           404,
-          `Product with ID ${item.inventoryId} not found in inventory`
+          `Product with ID ${normalizedId} not found in inventory`
         );
       }
 
