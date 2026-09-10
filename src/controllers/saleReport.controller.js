@@ -75,12 +75,29 @@ export const getSaleReportByStorefrontId = asyncErrorHandler(
       {
         $group: {
           _id: null,
-          totalFinalAmount: { $sum: "$finalAmount" },
+          totalFinalAmount: {
+            $sum: {
+              $cond: [{ $eq: [{ $toLower: "$paymentMethod" }, "foc"] }, 0, "$finalAmount"],
+            },
+          },
           totalPaidAmount: { $sum: "$paidAmount" },
-          totalSubTotal: { $sum: "$subTotal" },
+          totalSubTotal: {
+            $sum: {
+              $cond: [{ $eq: [{ $toLower: "$paymentMethod" }, "foc"] }, 0, "$subTotal"],
+            },
+          },
           totalTax: { $sum: "$tax" },
           totalDiscount: { $sum: "$discount" },
           totalExtraChange: { $sum: "$extraChange" },
+          outstandingCredit: {
+            $sum: {
+              $cond: [
+                { $eq: [{ $toLower: "$paymentMethod" }, "foc"] },
+                0,
+                { $subtract: ["$finalAmount", "$paidAmount"] },
+              ],
+            },
+          },
           orderCount: { $sum: 1 },
           creditOrderCount: {
             $sum: { $cond: [{ $eq: ["$paymentType", "credit"] }, 1, 0] },
@@ -100,6 +117,7 @@ export const getSaleReportByStorefrontId = asyncErrorHandler(
       totalTax: 0,
       totalDiscount: 0,
       totalExtraChange: 0,
+      outstandingCredit: 0,
       orderCount: 0,
       creditOrderCount: 0,
       paidOrderCount: 0,
@@ -130,6 +148,7 @@ export const getSaleReportByStorefrontId = asyncErrorHandler(
           tax: report.totalTax,
           discount: report.totalDiscount,
           extraChange: report.totalExtraChange,
+          outstandingCredit: report.outstandingCredit,
           orderCount: report.orderCount,
           creditOrderCount: report.creditOrderCount,
           paidOrderCount: report.paidOrderCount,
@@ -754,12 +773,26 @@ export const getProductSalesReportByStorefrontId = asyncErrorHandler(
       {
         $group: {
           _id: "$ordersProducts.inventoryId",
-          totalQuantity: { $sum: "$ordersProducts.quantity" },
+          rawUomData: {
+            $push: {
+              uom: { $ifNull: ["$ordersProducts.saleUnit", "$invLookup.unitOfMeasure", "piece"] },
+              quantity: "$ordersProducts.quantity"
+            }
+          },
+          totalQuantity: {
+            $sum: {
+              $multiply: [
+                "$ordersProducts.quantity",
+                { $ifNull: ["$ordersProducts.conversionFactor", 1] },
+              ],
+            },
+          },
           totalRevenue: {
             $sum: {
               $multiply: [
                 "$ordersProducts.quantity",
                 "$ordersProducts.unitPrice",
+                { $ifNull: ["$ordersProducts.conversionFactor", 1] },
               ],
             },
           },
@@ -774,7 +807,12 @@ export const getProductSalesReportByStorefrontId = asyncErrorHandler(
                   { $eq: ["$invLookup.sellingPrice", null] },
                   { $gte: ["$ordersProducts.unitPrice", "$invLookup.sellingPrice"] },
                 ]},
-                "$ordersProducts.quantity",
+                {
+                  $multiply: [
+                    "$ordersProducts.quantity",
+                    { $ifNull: ["$ordersProducts.conversionFactor", 1] },
+                  ],
+                },
                 0,
               ],
             },
@@ -785,7 +823,8 @@ export const getProductSalesReportByStorefrontId = asyncErrorHandler(
             $sum: {
               $multiply: [
                 "$ordersProducts.quantity",
-                { $ifNull: ["$ordersProducts.buyingPrice", "$invLookup.buyingPrice"] }
+                { $ifNull: ["$ordersProducts.buyingPrice", "$invLookup.buyingPrice"] },
+                { $ifNull: ["$ordersProducts.conversionFactor", 1] },
               ]
             }
           },
@@ -872,9 +911,26 @@ export const getProductSalesReportByStorefrontId = asyncErrorHandler(
           buyingPrice: 1,
           totalBuyingPrice: 1,
           totalProfit: 1,
+          rawUomData: 1,
         },
       },
     ]);
+
+    // Aggregate UOM breakdown in JavaScript
+    productSalesReport.forEach((product) => {
+      const breakdown = {};
+      if (product.rawUomData) {
+        product.rawUomData.forEach((item) => {
+          const uom = item.uom || "piece";
+          breakdown[uom] = (breakdown[uom] || 0) + item.quantity;
+        });
+      }
+      product.uomBreakdown = Object.keys(breakdown).map((uom) => ({
+        uom,
+        quantity: breakdown[uom],
+      }));
+      delete product.rawUomData;
+    });
 
     // Calculate totals across all products
     const totals = productSalesReport.reduce(
@@ -1030,7 +1086,14 @@ export const getCreditPersonaProductReport = asyncErrorHandler(
       {
         $group: {
           _id: "$ordersProducts.inventoryId",
-          totalQuantity: { $sum: "$ordersProducts.quantity" },
+          totalQuantity: {
+            $sum: {
+              $multiply: [
+                "$ordersProducts.quantity",
+                { $ifNull: ["$ordersProducts.conversionFactor", 1] },
+              ],
+            },
+          },
           orderCount: { $addToSet: "$_id" }, // Count unique orders
           productName: { $first: "$ordersProducts.productName" }, // Get product name from order
           productCode: { $first: "$ordersProducts.productCode" }, // Get product code from order
@@ -1217,7 +1280,14 @@ export const getSaleProductsAnalyticsByCreditPerson = asyncErrorHandler(
             inventoryId: "$ordersProducts.inventoryId",
             creditPersonId: "$creditPersonId",
           },
-          totalQuantity: { $sum: "$ordersProducts.quantity" },
+          totalQuantity: {
+            $sum: {
+              $multiply: [
+                "$ordersProducts.quantity",
+                { $ifNull: ["$ordersProducts.conversionFactor", 1] },
+              ],
+            },
+          },
           orderCount: { $addToSet: "$_id" }, // Count unique orders
           productName: { $first: "$ordersProducts.productName" }, // Get product name from order
           productCode: { $first: "$ordersProducts.productCode" }, // Get product code from order
@@ -1377,6 +1447,205 @@ export const getSaleProductsAnalyticsByCreditPerson = asyncErrorHandler(
           totalUniqueCreditPersons: totals.totalUniqueCreditPersons,
         },
         products: productAnalytics,
+      },
+    });
+  }
+);
+
+// ─── FOC Products Report ─────────────────────────────────────────────────────
+// Returns a per-product breakdown of all items given away as FOC,
+// with correctly factored totalValue and a uomBreakdown array.
+export const getFocProductsReport = asyncErrorHandler(
+  async (req, res, next) => {
+    const { storefrontId } = req.query;
+
+    let storefront = null;
+
+    // If storefrontId is provided, validate and fetch storefront
+    if (storefrontId) {
+      if (!mongoose.Types.ObjectId.isValid(storefrontId)) {
+        return next(new CustomError(400, "Invalid storefront ID format"));
+      }
+
+      storefront = await LocationProfile.findOne({
+        _id: storefrontId,
+        type: "storefront",
+        isDeleted: false,
+      });
+
+      if (!storefront) {
+        return next(new CustomError(404, "Storefront not found"));
+      }
+    }
+
+    // Build query filter – only completed FOC orders
+    const filter = {
+      isDeleted: false,
+      orderStatus: "completed",
+    };
+
+    if (storefrontId) {
+      filter.storefrontId = new mongoose.Types.ObjectId(storefrontId);
+    }
+
+    // Add date range filter
+    let parsedStartDate = null;
+    let parsedEndDate = null;
+    try {
+      const dateFilter = createDateFilter(req.query, "createdAt", false);
+      Object.assign(filter, dateFilter);
+
+      if (dateFilter.createdAt) {
+        if (dateFilter.createdAt.$gte) {
+          parsedStartDate = dateFilter.createdAt.$gte;
+        }
+        if (dateFilter.createdAt.$lte) {
+          parsedEndDate = dateFilter.createdAt.$lte;
+        }
+      }
+    } catch (error) {
+      if (error instanceof CustomError) {
+        return next(error);
+      }
+      return next(new CustomError(400, error.message || "Invalid date filter"));
+    }
+
+    // Aggregate FOC product statistics
+    const focProductsReport = await Order.aggregate([
+      { $match: filter },
+      // Case-insensitive match on paymentMethod for FOC
+      {
+        $match: {
+          $expr: { $eq: [{ $toLower: "$paymentMethod" }, "foc"] },
+        },
+      },
+      { $unwind: "$ordersProducts" },
+      // Lookup inventory for product details
+      {
+        $lookup: {
+          from: "inventories",
+          localField: "ordersProducts.inventoryId",
+          foreignField: "_id",
+          as: "invLookup",
+        },
+      },
+      {
+        $unwind: {
+          path: "$invLookup",
+          preserveNullAndEmptyArrays: true,
+        },
+      },
+      // Group by inventoryId to aggregate per-product stats
+      {
+        $group: {
+          _id: "$ordersProducts.inventoryId",
+          // Push raw UOM data for post-aggregation breakdown
+          rawUomData: {
+            $push: {
+              uom: {
+                $ifNull: [
+                  "$ordersProducts.saleUnit",
+                  "$invLookup.unitOfMeasure",
+                  "piece",
+                ],
+              },
+              quantity: "$ordersProducts.quantity",
+            },
+          },
+          // Total quantity in base units (factored by conversionFactor)
+          totalQuantity: {
+            $sum: {
+              $multiply: [
+                "$ordersProducts.quantity",
+                { $ifNull: ["$ordersProducts.conversionFactor", 1] },
+              ],
+            },
+          },
+          // Total value: quantity × unitPrice × conversionFactor
+          totalValue: {
+            $sum: {
+              $multiply: [
+                "$ordersProducts.quantity",
+                "$ordersProducts.unitPrice",
+                { $ifNull: ["$ordersProducts.conversionFactor", 1] },
+              ],
+            },
+          },
+          orderCount: { $sum: 1 },
+          // Carry forward product info from the lookup
+          productName: { $first: "$invLookup.productName" },
+          productCode: { $first: "$invLookup.productCode" },
+          category: { $first: "$invLookup.category" },
+          unitOfMeasure: { $first: "$invLookup.unitOfMeasure" },
+          sellingPrice: { $first: "$invLookup.sellingPrice" },
+        },
+      },
+      { $sort: { totalValue: -1 } },
+      // Shape the output
+      {
+        $project: {
+          _id: 0,
+          productId: "$_id",
+          productName: { $ifNull: ["$productName", "Unknown"] },
+          productCode: { $ifNull: ["$productCode", "N/A"] },
+          category: { $ifNull: ["$category", "N/A"] },
+          unitOfMeasure: { $ifNull: ["$unitOfMeasure", "piece"] },
+          sellingPrice: { $ifNull: ["$sellingPrice", 0] },
+          totalQuantity: 1,
+          totalValue: 1,
+          orderCount: 1,
+          rawUomData: 1,
+        },
+      },
+    ]);
+
+    // Aggregate UOM breakdown in JavaScript (same pattern as Product Sales)
+    focProductsReport.forEach((product) => {
+      const breakdown = {};
+      if (product.rawUomData) {
+        product.rawUomData.forEach((item) => {
+          const uom = item.uom || "piece";
+          breakdown[uom] = (breakdown[uom] || 0) + item.quantity;
+        });
+      }
+      product.uomBreakdown = Object.keys(breakdown).map((uom) => ({
+        uom,
+        quantity: breakdown[uom],
+      }));
+      delete product.rawUomData;
+    });
+
+    // Calculate totals across all FOC products
+    const totals = focProductsReport.reduce(
+      (acc, product) => {
+        acc.totalQuantity += product.totalQuantity;
+        acc.totalValue += product.totalValue;
+        acc.totalOrders += product.orderCount;
+        return acc;
+      },
+      { totalQuantity: 0, totalValue: 0, totalOrders: 0 },
+    );
+
+    const dateRange = {
+      startDate: parsedStartDate || (req.query.startDate ? new Date(req.query.startDate) : null),
+      endDate: parsedEndDate || (req.query.endDate ? new Date(req.query.endDate) : null),
+    };
+
+    res.status(200).json({
+      success: true,
+      statusCode: 200,
+      message: "FOC products report fetched successfully",
+      data: {
+        storefront: storefront
+          ? {
+              _id: storefront._id,
+              locationName: storefront.locationName,
+              locationCode: storefront.locationCode,
+            }
+          : null,
+        dateRange,
+        totals,
+        products: focProductsReport,
       },
     });
   }

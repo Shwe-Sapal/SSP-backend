@@ -365,12 +365,14 @@ transferSchema.methods._updateGRNToWarehouseStock = async function (
       throw new Error(`GRN line item with ID ${grnLineItem._id} not found.`);
     }
 
-    const destKey = transferItem.inventoryId.toString();
+    const batchNumber = transferItem.batchNumber || grnLineItem?.batchNumber || "__LEGACY__";
+    const destKey = `${transferItem.inventoryId.toString()}_${batchNumber}`;
     if (aggregatedDestOps.has(destKey)) {
       aggregatedDestOps.get(destKey).trueBaseQty += trueBaseQty;
     } else {
       aggregatedDestOps.set(destKey, {
         inventoryId: transferItem.inventoryId,
+        batchNumber: batchNumber,
         trueBaseQty: trueBaseQty,
         expiryDate: transferItem.expiryDate || grnLineItem?.expiryDate || null,
         manufacturingDate: transferItem.manufacturingDate || grnLineItem?.manufacturingDate || null
@@ -382,7 +384,8 @@ transferSchema.methods._updateGRNToWarehouseStock = async function (
     updateOne: {
       filter: { 
         inventoryId: item.inventoryId,
-        warehouseId: this.destinationWarehouseId
+        warehouseId: this.destinationWarehouseId,
+        batchNumber: item.batchNumber
       },
       update: {
         $inc: { quantity: item.trueBaseQty },
@@ -390,7 +393,7 @@ transferSchema.methods._updateGRNToWarehouseStock = async function (
         $setOnInsert: {
           inventoryId: item.inventoryId,
           warehouseId: this.destinationWarehouseId,
-          batchNumber: "__LEGACY__",
+          batchNumber: item.batchNumber,
           expiryDate: item.expiryDate,
           manufacturingDate: item.manufacturingDate
         }
@@ -469,12 +472,14 @@ transferSchema.methods._updateGRNToStorefrontStock = async function (
       throw new Error(`GRN line item with ID ${grnLineItem._id} not found.`);
     }
 
-    const destKey = transferItem.inventoryId.toString();
+    const batchNumber = transferItem.batchNumber || grnLineItem?.batchNumber || "__LEGACY__";
+    const destKey = `${transferItem.inventoryId.toString()}_${batchNumber}`;
     if (aggregatedDestOps.has(destKey)) {
       aggregatedDestOps.get(destKey).trueBaseQty += trueBaseQty;
     } else {
       aggregatedDestOps.set(destKey, {
         inventoryId: transferItem.inventoryId,
+        batchNumber: batchNumber,
         trueBaseQty: trueBaseQty,
         expiryDate: transferItem.expiryDate || grnLineItem?.expiryDate || null,
         manufacturingDate: transferItem.manufacturingDate || grnLineItem?.manufacturingDate || null
@@ -486,7 +491,8 @@ transferSchema.methods._updateGRNToStorefrontStock = async function (
     updateOne: {
       filter: { 
         inventoryId: item.inventoryId,
-        storefrontId: this.destinationStorefrontId
+        storefrontId: this.destinationStorefrontId,
+        batchNumber: item.batchNumber
       },
       update: {
         $inc: { quantity: item.trueBaseQty },
@@ -494,7 +500,7 @@ transferSchema.methods._updateGRNToStorefrontStock = async function (
         $setOnInsert: {
           inventoryId: item.inventoryId,
           storefrontId: this.destinationStorefrontId,
-          batchNumber: "__LEGACY__",
+          batchNumber: item.batchNumber,
           expiryDate: item.expiryDate,
           manufacturingDate: item.manufacturingDate
         }

@@ -295,17 +295,29 @@ export const createOrder = asyncErrorHandler(async (req, res, next) => {
           }
 
           // 5. Validate stock availability and deduct stock
+          // Fetch ALL batch records for each product in this storefront so we can
+          // accurately sum the total available quantity across all batches.
           for (const [inventoryIdStr, totalBaseQty] of aggregatedQuantities.entries()) {
-            const stockRecord = await StorefrontInventory.findOne(
+            // Aggregate total quantity across ALL batches for this product + storefront
+            const stockAgg = await StorefrontInventory.aggregate([
               {
-                inventoryId: new mongoose.Types.ObjectId(inventoryIdStr),
-                storefrontId: storefrontId,
+                $match: {
+                  inventoryId: new mongoose.Types.ObjectId(inventoryIdStr),
+                  storefrontId: new mongoose.Types.ObjectId(storefrontId),
+                },
               },
-              null,
-              { session },
-            );
+              {
+                $group: {
+                  _id: null,
+                  totalQty: { $sum: "$quantity" },
+                },
+              },
+            ]).session(session);
 
-            if (!stockRecord) {
+            const totalAvailable = stockAgg.length > 0 ? (stockAgg[0].totalQty || 0) : 0;
+
+            if (totalAvailable === 0 && stockAgg.length === 0) {
+              // No stock records exist for this product in this storefront
               const inventoryItem = inventoryMap.get(inventoryIdStr);
               throw new CustomError(
                 404,
@@ -315,9 +327,8 @@ export const createOrder = asyncErrorHandler(async (req, res, next) => {
               );
             }
 
-            // Check stock availability
-            const availableQuantity = stockRecord.quantity || 0;
-            if (availableQuantity < totalBaseQty) {
+            // Check stock availability across all batches
+            if (totalAvailable < totalBaseQty) {
               const inventoryItem = inventoryMap.get(inventoryIdStr);
               throw new CustomError(
                 400,
@@ -325,14 +336,42 @@ export const createOrder = asyncErrorHandler(async (req, res, next) => {
                   inventoryItem?.productCode || inventoryIdStr
                 }' (${
                   inventoryItem?.productName || "Unknown"
-                }). Available: ${availableQuantity}, Requested: ${totalBaseQty} (Base Quantity)`,
+                }). Available: ${totalAvailable}, Requested: ${totalBaseQty} (Base Quantity)`,
               );
             }
 
-            // Deduct stock - modify document directly and save with session
-            stockRecord.quantity -= totalBaseQty;
-            stockRecord.lastUpdated = new Date();
-            await stockRecord.save({ session });
+            // Deduct stock across batches in FIFO order (oldest batch first)
+            // Fetch all batch records sorted by creation date (ascending)
+            const batchRecords = await StorefrontInventory.find(
+              {
+                inventoryId: new mongoose.Types.ObjectId(inventoryIdStr),
+                storefrontId: new mongoose.Types.ObjectId(storefrontId),
+                quantity: { $gt: 0 },
+              },
+              null,
+              { session, sort: { createdAt: 1 } },
+            );
+
+            let remaining = totalBaseQty;
+            for (const batch of batchRecords) {
+              if (remaining <= 0) break;
+              const deduct = Math.min(batch.quantity, remaining);
+              batch.quantity -= deduct;
+              batch.lastUpdated = new Date();
+              await batch.save({ session });
+              remaining -= deduct;
+            }
+
+            if (remaining > 0) {
+              // Shouldn't happen after validation, but guard just in case
+              const inventoryItem = inventoryMap.get(inventoryIdStr);
+              throw new CustomError(
+                400,
+                `Failed to deduct full stock for product '${
+                  inventoryItem?.productCode || inventoryIdStr
+                }'. Shortage: ${remaining}`,
+              );
+            }
           }
 
           // 6. Create order with calculated values
@@ -506,6 +545,14 @@ export const getAllOrders = asyncErrorHandler(async (req, res, next) => {
     filter.paymentMethod = paymentMethod.trim();
   }
 
+  const { inventoryId } = req.query;
+  if (inventoryId) {
+    if (!mongoose.Types.ObjectId.isValid(inventoryId)) {
+      return next(new CustomError(400, "Invalid inventory ID format"));
+    }
+    filter["ordersProducts.inventoryId"] = new mongoose.Types.ObjectId(inventoryId);
+  }
+
   // Add date range filter using dateFilter utility
   try {
     const dateFilter = createDateFilter(req.query, "createdAt", false);
@@ -521,9 +568,23 @@ export const getAllOrders = asyncErrorHandler(async (req, res, next) => {
 
   const orders = await Order.find(filter)
     .populate("storefrontId", "locationName locationCode")
-    .populate("ordersProducts.inventoryId", "productName productCode SKU")
+    .populate("ordersProducts.inventoryId", "productName productCode SKU unitOfMeasure")
     .populate("creditPersonId", "name phone address")
-    .populate("soldBy", "name role");
+    .populate("soldBy", "name role")
+    .sort({ createdAt: -1 })
+    .lean();
+
+  // Add line item total calculation accounting for conversion factor
+  orders.forEach((order) => {
+    if (order.ordersProducts) {
+      order.ordersProducts.forEach((item) => {
+        const factor = item.conversionFactor || 1;
+        item.total = item.quantity * item.unitPrice * factor;
+        item.uom = item.saleUnit || "piece";
+        item.baseUnit = item.inventoryId?.unitOfMeasure || "piece";
+      });
+    }
+  });
 
   res.status(200).json({
     success: true,
@@ -756,20 +817,43 @@ export const updateOrderPaidAmount = asyncErrorHandler(
 export const getOrdersByStorefrontId = asyncErrorHandler(
   async (req, res, next) => {
     const { storefrontId } = req.params;
+    const { inventoryId } = req.query;
 
     if (!mongoose.Types.ObjectId.isValid(storefrontId)) {
       return next(new CustomError(400, "Invalid storefront ID format"));
     }
 
-    const orders = await Order.find({
+    const filter = {
       storefrontId: storefrontId,
       isDeleted: false,
-    })
+    };
+
+    if (inventoryId) {
+      if (!mongoose.Types.ObjectId.isValid(inventoryId)) {
+        return next(new CustomError(400, "Invalid inventory ID format"));
+      }
+      filter["ordersProducts.inventoryId"] = new mongoose.Types.ObjectId(inventoryId);
+    }
+
+    const orders = await Order.find(filter)
       .sort({ createdAt: -1 }) // Sort by newest first
       .populate("storefrontId", "locationName locationCode")
-      .populate("ordersProducts.inventoryId", "productName productCode SKU")
+      .populate("ordersProducts.inventoryId", "productName productCode SKU unitOfMeasure")
       .populate("creditPersonId", "name phone address")
-      .populate("soldBy", "name role");
+      .populate("soldBy", "name role")
+      .lean();
+
+    // Add line item total calculation accounting for conversion factor
+    orders.forEach((order) => {
+      if (order.ordersProducts) {
+        order.ordersProducts.forEach((item) => {
+          const factor = item.conversionFactor || 1;
+          item.total = item.quantity * item.unitPrice * factor;
+          item.uom = item.saleUnit || "piece";
+          item.baseUnit = item.inventoryId?.unitOfMeasure || "piece";
+        });
+      }
+    });
 
     res.status(200).json({
       success: true,

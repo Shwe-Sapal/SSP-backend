@@ -353,8 +353,8 @@ export const getRedemptions = asyncErrorHandler(async (req, res, next) => {
   const [totalItems, redemptions] = await Promise.all([
     LuckyDrawRedemption.countDocuments(filter),
     LuckyDrawRedemption.find(filter)
-      .populate("promotionId", "promotionName ticketName redemptionPrice")
-      .populate("inventoryId", "productName productCode")
+      .populate("promotionId", "promotionName ticketName redemptionPrice prizeUnit")
+      .populate("inventoryId", "productName productCode unitOfMeasure uom uomConversions")
       .populate("storefrontId", "locationName locationCode")
       .populate("redeemedBy", "name")
       .skip(skip)
@@ -362,10 +362,33 @@ export const getRedemptions = asyncErrorHandler(async (req, res, next) => {
       .sort({ createdAt: -1 }),
   ]);
 
+  // Transform output to explicitly include uom, baseUnit, and conversionFactor
+  const formattedRedemptions = redemptions.map((redemption) => {
+    const promotion = redemption.promotionId;
+    const product = redemption.inventoryId;
+    
+    let uom = "piece";
+    let baseUnit = "piece";
+    let conversionFactor = 1;
+
+    if (promotion && product) {
+      uom = promotion.prizeUnit || "piece";
+      baseUnit = product.unitOfMeasure || product.uom || "piece";
+      conversionFactor = getEffectiveBaseFactor(uom, product.uomConversions || [], baseUnit);
+    }
+
+    return {
+      ...redemption.toObject(),
+      uom,
+      baseUnit,
+      conversionFactor,
+    };
+  });
+
   res.status(200).json({
     success: true,
     message: "Lucky draw redemptions fetched successfully",
-    data: { redemptions },
+    data: { redemptions: formattedRedemptions },
     pagination: {
       currentPage: Number(page),
       totalPages: Math.ceil(totalItems / Number(limit)),

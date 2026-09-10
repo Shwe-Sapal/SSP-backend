@@ -6,6 +6,7 @@ import {
   getProductSalesReportByStorefrontId,
   getCreditPersonaProductReport,
   getSaleProductsAnalyticsByCreditPerson,
+  getFocProductsReport,
 } from "../controllers/saleReport.controller.js";
 import { protect } from "../controllers/administrationPolicy.controller.js";
 import { permissionGranted } from "../controllers/administrationPolicy.controller.js";
@@ -64,6 +65,15 @@ router.get(
   protect,
   permissionGranted("owner", "admin", "cashier"),
   getSaleProductsAnalyticsByCreditPerson
+);
+
+// FOC products report - per-product breakdown of all items given away as FOC
+// Use ?storefrontId=<id> for specific storefront, omit for all storefronts
+router.get(
+  "/sale-report/foc-products",
+  protect,
+  permissionGranted("owner", "admin", "cashier"),
+  getFocProductsReport
 );
 
 export default router;
