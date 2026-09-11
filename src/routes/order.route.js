@@ -8,6 +8,7 @@ import {
   updateOrderPaidAmount,
   addOrderItems,
   removeOrderItems,
+  overwriteOrder,
   hardDeleteOrder,
 } from "../controllers/order.controller.js";
 
@@ -71,6 +72,15 @@ router.patch(
   protect,
   permissionGranted("owner"),
   removeOrderItems
+);
+
+
+// Overwrite order entirely
+router.patch(
+  "/order/:orderId/overwrite",
+  protect,
+  permissionGranted("owner"),
+  overwriteOrder
 );
 
 // Hard delete order
