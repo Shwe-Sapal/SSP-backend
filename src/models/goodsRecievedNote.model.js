@@ -53,6 +53,13 @@ const grnLineItemSchema = new mongoose.Schema(
       min: [0, "Bad quantity cannot be negative"],
       default: 0,
     },
+    returnedQuantity: {
+      type: Number,
+      min: [0, "Returned quantity cannot be negative"],
+      default: 0,
+      // Tracks how much bad quantity has been returned to supplier
+      // availableBadQuantity = badQuantity - returnedQuantity
+    },
     transferredQuantity: {
       type: Number,
       required: [true, "Transferred quantity is required"],
@@ -125,6 +132,13 @@ grnLineItemSchema.virtual("availableQuantity").get(function () {
   const goodQty = this.goodQuantity || 0;
   const transferredQty = this.transferredQuantity || 0;
   return Math.max(0, goodQty - transferredQty);
+});
+
+// Virtual for available bad quantity (badQuantity - returnedQuantity)
+grnLineItemSchema.virtual("availableBadQuantity").get(function () {
+  const badQty = this.badQuantity || 0;
+  const returnedQty = this.returnedQuantity || 0;
+  return Math.max(0, badQty - returnedQty);
 });
 
 // Main GRN Schema

@@ -37,6 +37,7 @@ import shopSettingRouter from "./routes/shopSetting.route.js";
 import dailyReportRouter from "./routes/dailyReport.route.js";
 import luckyDrawRouter from "./routes/luckyDraw.route.js";
 import reportRouter from "./routes/report.route.js";
+import supplierReturnRouter from "./routes/supplierReturn.route.js";
 const app = express();
 app.use(
   helmet({
@@ -78,6 +79,7 @@ app.use("/api/v1", shopSettingRouter);
 app.use("/api/v1", dailyReportRouter);
 app.use("/api/v1", luckyDrawRouter);
 app.use("/api/v1", reportRouter);
+app.use("/api/v1", supplierReturnRouter);
 //404-Error Handler
 app.all("/*any", (req, res, next) => {
   const err = new CustomError(

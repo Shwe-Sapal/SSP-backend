@@ -3,6 +3,7 @@ import {
   getPurchaseOverallReport,
   getPurchaseProductReport,
   getLowStockReport,
+  getPurchaseReturnsReport,
 } from "../controllers/report.controller.js";
 import { protect } from "../controllers/administrationPolicy.controller.js";
 import { permissionGranted } from "../controllers/administrationPolicy.controller.js";
@@ -17,6 +18,15 @@ router.get(
   protect,
   permissionGranted("owner", "admin"),
   getPurchaseOverallReport,
+);
+
+// Returns & damages breakdown
+// Query: ?startDate=YYYY-MM-DD&endDate=YYYY-MM-DD
+router.get(
+  "/reports/purchases/returns",
+  protect,
+  permissionGranted("owner", "admin"),
+  getPurchaseReturnsReport,
 );
 
 // Product-level purchase breakdown (quantity purchased, total cost per product)

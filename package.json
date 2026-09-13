@@ -12,8 +12,8 @@
   "type": "module",
   "main": "server.js",
   "scripts": {
-    "dev": "export NODE_ENV=development && nodemon src/server.js",
-    "prod": "export NODE_ENV=production && nodemon src/server.js",
+    "dev": "nodemon src/server.js",
+    "prod": "nodemon src/server.js",
     "start": "node src/server.js"
   },
   "dependencies": {

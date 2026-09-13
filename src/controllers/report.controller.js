@@ -1,6 +1,7 @@
 import Purchasing from "../models/purchasing.model.js";
 import WarehouseStock from "../models/warehouse.model.js";
 import StorefrontInventory from "../models/storefrontInventory.model.js";
+import SupplierReturn from "../models/supplierReturn.model.js";
 import { asyncErrorHandler } from "../utils/asyncErrorHandler.js";
 import CustomError from "../utils/customError.js";
 import { getEffectiveBaseFactor } from "../utils/uom.utils.js";
@@ -126,11 +127,26 @@ export const getPurchaseOverallReport = asyncErrorHandler(
       },
     ];
 
-    // Execute all three pipelines concurrently
-    const [summaryResult, statusBreakdown, topSuppliers] = await Promise.all([
+    const returnMatch = { isDeleted: false, status: { $ne: "cancelled" } };
+    if (dateFilter) returnMatch.createdAt = dateFilter;
+
+    const returnSummaryPipeline = [
+      { $match: returnMatch },
+      {
+        $group: {
+          _id: null,
+          totalReturnAmount: { $sum: "$totalReturnAmount" },
+          totalReturnsCount: { $sum: 1 },
+        },
+      },
+    ];
+
+    // Execute all pipelines concurrently
+    const [summaryResult, statusBreakdown, topSuppliers, returnSummaryResult] = await Promise.all([
       Purchasing.aggregate(summaryPipeline),
       Purchasing.aggregate(statusPipeline),
       Purchasing.aggregate(supplierPipeline),
+      SupplierReturn.aggregate(returnSummaryPipeline),
     ]);
 
     const summary =
@@ -138,11 +154,24 @@ export const getPurchaseOverallReport = asyncErrorHandler(
         ? summaryResult[0]
         : { totalPurchaseValue: 0, totalOrders: 0, averageValue: 0 };
 
+    const returnSummary =
+      returnSummaryResult.length > 0
+        ? returnSummaryResult[0]
+        : { totalReturnAmount: 0, totalReturnsCount: 0 };
+
+    const netPurchaseValue = Math.max(
+      0,
+      summary.totalPurchaseValue - returnSummary.totalReturnAmount
+    );
+
     res.status(200).json({
       success: true,
       message: "Overall purchase report retrieved successfully",
       data: {
         ...summary,
+        totalReturnAmount: returnSummary.totalReturnAmount,
+        totalReturnsCount: returnSummary.totalReturnsCount,
+        netPurchaseValue,
         statusBreakdown,
         topSuppliers,
       },
@@ -372,6 +401,245 @@ export const getLowStockReport = asyncErrorHandler(
         totalPages: Math.ceil(totalItems / limitNum),
         totalItems,
         itemsPerPage: limitNum,
+      },
+    });
+  },
+);
+
+// ─── 4. Purchase Returns & Damages Report ────────────────────────────────────
+export const getPurchaseReturnsReport = asyncErrorHandler(
+  async (req, res, next) => {
+    const { startDate, endDate } = req.query;
+
+    const baseMatch = { isDeleted: false, status: { $ne: "cancelled" } };
+    const poMatch = { isDeleted: false };
+
+    const dateFilter = buildDateFilter(startDate, endDate);
+    if (dateFilter === "invalid") {
+      return next(
+        new CustomError(400, "Invalid date format. Use ISO 8601 (YYYY-MM-DD)."),
+      );
+    }
+    if (dateFilter) {
+      baseMatch.createdAt = dateFilter;
+      poMatch.createdAt = dateFilter;
+    }
+
+    // 1. Gross Purchases Summary
+    const poSummary = await Purchasing.aggregate([
+      { $match: poMatch },
+      {
+        $group: {
+          _id: null,
+          totalGrossPurchase: { $sum: "$totalAmount" },
+          totalPOCount: { $sum: 1 },
+        },
+      },
+    ]);
+    const totalGrossPurchase =
+      poSummary.length > 0 ? poSummary[0].totalGrossPurchase : 0;
+    const totalPOCount = poSummary.length > 0 ? poSummary[0].totalPOCount : 0;
+
+    // 2. Returns Overall Summary
+    const returnsSummary = await SupplierReturn.aggregate([
+      { $match: baseMatch },
+      {
+        $group: {
+          _id: null,
+          totalReturnAmount: { $sum: "$totalReturnAmount" },
+          totalReturnsCount: { $sum: 1 },
+          totalRefundedAmount: { $sum: "$refundDetails.refundAmount" },
+          completedReturnsCount: {
+            $sum: { $cond: [{ $eq: ["$status", "completed"] }, 1, 0] },
+          },
+          pendingReturnsCount: {
+            $sum: { $cond: [{ $eq: ["$status", "pending"] }, 1, 0] },
+          },
+          pendingReturnAmount: {
+            $sum: {
+              $cond: [{ $eq: ["$status", "pending"] }, "$totalReturnAmount", 0],
+            },
+          },
+        },
+      },
+    ]);
+
+    const totalReturnAmount =
+      returnsSummary.length > 0 ? returnsSummary[0].totalReturnAmount : 0;
+    const totalReturnsCount =
+      returnsSummary.length > 0 ? returnsSummary[0].totalReturnsCount : 0;
+    const totalRefundedAmount =
+      returnsSummary.length > 0 ? returnsSummary[0].totalRefundedAmount : 0;
+    const completedReturnsCount =
+      returnsSummary.length > 0 ? returnsSummary[0].completedReturnsCount : 0;
+    const pendingReturnsCount =
+      returnsSummary.length > 0 ? returnsSummary[0].pendingReturnsCount : 0;
+    const pendingReturnAmount =
+      returnsSummary.length > 0 ? returnsSummary[0].pendingReturnAmount : 0;
+
+    // 3. Exchange replacement value
+    const exchangeSummary = await SupplierReturn.aggregate([
+      { $match: baseMatch },
+      { $unwind: "$exchangeItems" },
+      {
+        $lookup: {
+          from: "inventories",
+          localField: "exchangeItems.inventoryId",
+          foreignField: "_id",
+          as: "prod",
+        },
+      },
+      { $unwind: { path: "$prod", preserveNullAndEmptyArrays: true } },
+      {
+        $group: {
+          _id: null,
+          totalExchangeValue: {
+            $sum: {
+              $multiply: [
+                "$exchangeItems.quantity",
+                { $ifNull: ["$prod.buyingPrice", 0] },
+              ],
+            },
+          },
+          totalExchangeQuantity: { $sum: "$exchangeItems.quantity" },
+        },
+      },
+    ]);
+
+    const totalExchangeValue =
+      exchangeSummary.length > 0 ? exchangeSummary[0].totalExchangeValue : 0;
+    const totalExchangeQuantity =
+      exchangeSummary.length > 0 ? exchangeSummary[0].totalExchangeQuantity : 0;
+
+    const totalRecoveredValue = totalRefundedAmount + totalExchangeValue;
+    const recoveryRate =
+      totalReturnAmount > 0
+        ? Math.min(100, (totalRecoveredValue / totalReturnAmount) * 100)
+        : 0;
+    const netPurchaseValue = Math.max(0, totalGrossPurchase - totalReturnAmount);
+
+    // 4. Breakdown by Reason (Expired vs GRN Bad vs Other)
+    const reasonBreakdown = await SupplierReturn.aggregate([
+      { $match: baseMatch },
+      { $unwind: "$items" },
+      {
+        $group: {
+          _id: "$items.reason",
+          totalAmount: { $sum: "$items.totalAmount" },
+          totalQuantity: { $sum: "$items.quantity" },
+          count: { $sum: 1 },
+        },
+      },
+      {
+        $project: {
+          _id: 0,
+          reason: "$_id",
+          totalAmount: 1,
+          totalQuantity: 1,
+          count: 1,
+        },
+      },
+    ]);
+
+    // 5. Supplier Return Breakdown
+    const supplierBreakdown = await SupplierReturn.aggregate([
+      { $match: baseMatch },
+      {
+        $group: {
+          _id: "$supplierId",
+          totalReturnAmount: { $sum: "$totalReturnAmount" },
+          returnsCount: { $sum: 1 },
+          refundedAmount: { $sum: "$refundDetails.refundAmount" },
+        },
+      },
+      {
+        $lookup: {
+          from: "supplierprofiles",
+          localField: "_id",
+          foreignField: "_id",
+          as: "supplier",
+        },
+      },
+      { $unwind: { path: "$supplier", preserveNullAndEmptyArrays: true } },
+      {
+        $project: {
+          _id: 0,
+          supplierId: "$_id",
+          supplierName: {
+            $ifNull: [
+              "$supplier.name",
+              { $ifNull: ["$supplier.supplierName", "Unknown"] },
+            ],
+          },
+          contactNumber: {
+            $ifNull: [
+              "$supplier.phone",
+              { $ifNull: ["$supplier.contactNumber", null] },
+            ],
+          },
+          totalReturnAmount: 1,
+          returnsCount: 1,
+          refundedAmount: 1,
+        },
+      },
+      { $sort: { totalReturnAmount: -1 } },
+    ]);
+
+    // 6. Top Returned Products (Top 10)
+    const topReturnedProducts = await SupplierReturn.aggregate([
+      { $match: baseMatch },
+      { $unwind: "$items" },
+      {
+        $group: {
+          _id: "$items.inventoryId",
+          productName: { $first: "$items.productName" },
+          productCode: { $first: "$items.productCode" },
+          unitOfMeasure: { $first: "$items.unitOfMeasure" },
+          totalQuantity: { $sum: "$items.quantity" },
+          totalLossAmount: { $sum: "$items.totalAmount" },
+          reasons: { $addToSet: "$items.reason" },
+          returnCount: { $sum: 1 },
+        },
+      },
+      { $sort: { totalLossAmount: -1 } },
+      { $limit: 10 },
+      {
+        $project: {
+          _id: 0,
+          inventoryId: "$_id",
+          productName: 1,
+          productCode: 1,
+          unitOfMeasure: 1,
+          totalQuantity: 1,
+          totalLossAmount: 1,
+          reasons: 1,
+          returnCount: 1,
+        },
+      },
+    ]);
+
+    res.status(200).json({
+      success: true,
+      message: "Purchase returns and damages report retrieved successfully",
+      data: {
+        summary: {
+          totalGrossPurchase,
+          totalPOCount,
+          totalReturnAmount,
+          totalReturnsCount,
+          netPurchaseValue,
+          totalRefundedAmount,
+          totalExchangeValue,
+          totalExchangeQuantity,
+          totalRecoveredValue,
+          recoveryRate: Math.round(recoveryRate * 100) / 100,
+          pendingReturnsCount,
+          pendingReturnAmount,
+          completedReturnsCount,
+        },
+        reasonBreakdown,
+        supplierBreakdown,
+        topReturnedProducts,
       },
     });
   },

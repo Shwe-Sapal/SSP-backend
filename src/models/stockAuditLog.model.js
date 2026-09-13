@@ -74,9 +74,18 @@ const stockLogSchema = new Schema(
     relatedTransactionType: {
       type: String,
       enum: {
-        values: ["grn", "order", "purchase", "expense", "lucky_draw_redemption", null],
+        values: [
+          "grn",
+          "order",
+          "purchase",
+          "expense",
+          "lucky_draw_redemption",
+          "supplier_return",
+          "supplier_exchange",
+          null,
+        ],
         message:
-          "Related transaction type must be one of: grn, order, purchase, expense, lucky_draw_redemption",
+          "Related transaction type must be one of: grn, order, purchase, expense, lucky_draw_redemption, supplier_return, supplier_exchange",
       },
       default: null,
     },
