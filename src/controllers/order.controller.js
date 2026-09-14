@@ -1499,6 +1499,7 @@ export const overwriteOrder = asyncErrorHandler(async (req, res, next) => {
     finalAmount,
     extraChange,
     paidAmount,
+    paymentMethod,
   } = req.body;
 
   // Validate orderId
@@ -1676,6 +1677,7 @@ export const overwriteOrder = asyncErrorHandler(async (req, res, next) => {
       if (discount !== undefined) order.discount = discount;
       if (finalAmount !== undefined) order.finalAmount = finalAmount;
       if (paidAmount !== undefined) order.paidAmount = paidAmount;
+      if (paymentMethod !== undefined) order.paymentMethod = paymentMethod;
 
       await order.save({ session });
     });
