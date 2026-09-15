@@ -275,6 +275,7 @@ export const processRedemption = asyncErrorHandler(async (req, res, next) => {
 
       // 6. Create redemption record
       const totalAmount = promotion.redemptionPrice * (promotion.quantityPerRedeem * redeemQuantity);
+      const originalQuantity = promotion.quantityPerRedeem * redeemQuantity;
       const redemptions = await LuckyDrawRedemption.create(
         [
           {
@@ -282,6 +283,8 @@ export const processRedemption = asyncErrorHandler(async (req, res, next) => {
             promotionId: promotion._id,
             inventoryId: inventoryIdValue,
             quantity: trueBaseQuantity,
+            redeemedQuantity: originalQuantity,
+            redeemedUom: promotion.prizeUnit,
             unitPrice: promotion.redemptionPrice,
             totalAmount,
             storefrontId,
@@ -382,6 +385,8 @@ export const getRedemptions = asyncErrorHandler(async (req, res, next) => {
       uom,
       baseUnit,
       conversionFactor,
+      redeemedQuantity: redemption.redeemedQuantity || (redemption.quantity / (conversionFactor || 1)),
+      redeemedUom: redemption.redeemedUom || uom,
     };
   });
 

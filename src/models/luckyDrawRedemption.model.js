@@ -23,6 +23,16 @@ const luckyDrawRedemptionSchema = new mongoose.Schema(
       default: 1,
       min: [1, "Quantity must be at least 1"],
     },
+    redeemedQuantity: {
+      type: Number,
+      default: 1,
+      min: [1, "Redeemed quantity must be at least 1"],
+    },
+    redeemedUom: {
+      type: String,
+      trim: true,
+      default: null,
+    },
     unitPrice: {
       type: Number,
       required: [true, "Unit price is required"],
