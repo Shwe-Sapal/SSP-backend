@@ -290,6 +290,10 @@ supplierReturnSchema.index({ sourceType: 1 });
 supplierReturnSchema.index({ createdAt: -1 });
 supplierReturnSchema.index({ isDeleted: 1 });
 
+// High-performance compound indexes for returns reports
+supplierReturnSchema.index({ supplierId: 1, isDeleted: 1, createdAt: -1 });
+supplierReturnSchema.index({ isDeleted: 1, createdAt: -1 });
+
 const SupplierReturn = mongoose.model("SupplierReturn", supplierReturnSchema);
 
 export default SupplierReturn;

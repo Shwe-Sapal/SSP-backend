@@ -205,6 +205,11 @@ PurchasingSchema.index({ status: 1, isDeleted: 1 }); // Compound index for commo
 PurchasingSchema.index({ paymentType: 1 });
 PurchasingSchema.index({ paidAmount: 1 });
 
+// High-performance compound indexes for purchasing reports
+PurchasingSchema.index({ isDeleted: 1, status: 1, createdAt: -1 });
+PurchasingSchema.index({ supplierId: 1, isDeleted: 1, createdAt: -1 });
+PurchasingSchema.index({ isDeleted: 1, createdAt: -1 });
+
 const Purchasing = mongoose.model("Purchasing", PurchasingSchema);
 
 export default Purchasing;

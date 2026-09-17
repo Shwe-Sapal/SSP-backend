@@ -26,7 +26,7 @@ export const getSaleReportByStorefrontId = asyncErrorHandler(
         _id: storefrontId,
         type: "storefront",
         isDeleted: false,
-      });
+      }).lean();
 
       if (!storefront) {
         return next(new CustomError(404, "Storefront not found"));
@@ -142,16 +142,16 @@ export const getSaleReportByStorefrontId = asyncErrorHandler(
           : null,
         dateRange,
         report: {
-          finalAmount: report.totalFinalAmount, // Main metric as requested
-          paidAmount: report.totalPaidAmount,
-          subTotal: report.totalSubTotal,
-          tax: report.totalTax,
-          discount: report.totalDiscount,
-          extraChange: report.totalExtraChange,
-          outstandingCredit: report.outstandingCredit,
-          orderCount: report.orderCount,
-          creditOrderCount: report.creditOrderCount,
-          paidOrderCount: report.paidOrderCount,
+          finalAmount: Math.round((report.totalFinalAmount || 0) * 100) / 100,
+          paidAmount: Math.round((report.totalPaidAmount || 0) * 100) / 100,
+          subTotal: Math.round((report.totalSubTotal || 0) * 100) / 100,
+          tax: Math.round((report.totalTax || 0) * 100) / 100,
+          discount: Math.round((report.totalDiscount || 0) * 100) / 100,
+          extraChange: Math.round((report.totalExtraChange || 0) * 100) / 100,
+          outstandingCredit: Math.round((report.outstandingCredit || 0) * 100) / 100,
+          orderCount: report.orderCount || 0,
+          creditOrderCount: report.creditOrderCount || 0,
+          paidOrderCount: report.paidOrderCount || 0,
         },
       },
     });
@@ -177,7 +177,7 @@ export const getPaymentMethodReportByStorefrontId = asyncErrorHandler(
         _id: storefrontId,
         type: "storefront",
         isDeleted: false,
-      });
+      }).lean();
 
       if (!storefront) {
         return next(new CustomError(404, "Storefront not found"));
@@ -240,9 +240,9 @@ export const getPaymentMethodReportByStorefrontId = asyncErrorHandler(
     // Calculate totals across all payment methods
     const totals = paymentMethodReport.reduce(
       (acc, item) => {
-        acc.totalPaidAmount += item.totalPaidAmount;
-        acc.totalFinalAmount += item.totalFinalAmount;
-        acc.totalOrderCount += item.orderCount;
+        acc.totalPaidAmount += item.totalPaidAmount || 0;
+        acc.totalFinalAmount += item.totalFinalAmount || 0;
+        acc.totalOrderCount += item.orderCount || 0;
         return acc;
       },
       {
@@ -272,14 +272,14 @@ export const getPaymentMethodReportByStorefrontId = asyncErrorHandler(
           : null,
         dateRange,
         totals: {
-          totalPaidAmount: totals.totalPaidAmount,
-          totalFinalAmount: totals.totalFinalAmount,
+          totalPaidAmount: Math.round(totals.totalPaidAmount * 100) / 100,
+          totalFinalAmount: Math.round(totals.totalFinalAmount * 100) / 100,
           totalOrderCount: totals.totalOrderCount,
         },
         paymentMethods: paymentMethodReport.map((item) => ({
           paymentMethod: item._id || "unknown",
-          totalPaidAmount: item.totalPaidAmount,
-          totalFinalAmount: item.totalFinalAmount,
+          totalPaidAmount: Math.round((item.totalPaidAmount || 0) * 100) / 100,
+          totalFinalAmount: Math.round((item.totalFinalAmount || 0) * 100) / 100,
           orderCount: item.orderCount,
         })),
       },
@@ -288,206 +288,6 @@ export const getPaymentMethodReportByStorefrontId = asyncErrorHandler(
 );
 
 // Get credit sale report with credit records breakdown for a specific storefront or all storefronts
-// export const getCreditSaleReportByStorefrontId = asyncErrorHandler(
-//   async (req, res, next) => {
-//     const { storefrontId } = req.query;
-
-//     let storefront = null;
-
-//     // If storefrontId is provided, validate and fetch storefront
-//     if (storefrontId) {
-//       // Validate storefrontId
-//       if (!mongoose.Types.ObjectId.isValid(storefrontId)) {
-//         return next(new CustomError(400, "Invalid storefront ID format"));
-//       }
-
-//       // Validate storefront exists
-//       storefront = await LocationProfile.findOne({
-//         _id: storefrontId,
-//         type: "storefront",
-//         isDeleted: false,
-//       });
-
-//       if (!storefront) {
-//         return next(new CustomError(404, "Storefront not found"));
-//       }
-//     }
-
-//     // Build query filter - only credit orders
-//     const filter = {
-//       isDeleted: false,
-//       orderStatus: "completed", // Only include completed orders
-//       paymentType: "credit", // Only credit orders
-//     };
-
-//     // Add storefrontId filter only if provided
-//     if (storefrontId) {
-//       filter.storefrontId = new mongoose.Types.ObjectId(storefrontId);
-//     }
-
-//     // Add date range filter using dateFilter utility
-//     let parsedStartDate = null;
-//     let parsedEndDate = null;
-//     try {
-//       const dateFilter = createDateFilter(req.query, "paymentDate", false);
-//       Object.assign(filter, dateFilter);
-
-//       // Extract parsed dates from the filter for response
-//       if (dateFilter.paymentDate) {
-//         if (dateFilter.paymentDate.$gte) {
-//           parsedStartDate = dateFilter.paymentDate.$gte;
-//         }
-//         if (dateFilter.paymentDate.$lte) {
-//           parsedEndDate = dateFilter.paymentDate.$lte;
-//         }
-//       }
-//     } catch (error) {
-//       // If it's a CustomError, pass it to error handler
-//       if (error instanceof CustomError) {
-//         return next(error);
-//       }
-//       // For other errors, wrap and pass
-//       return next(new CustomError(400, error.message || "Invalid date filter"));
-//     }
-
-//     // Get all credit orders
-//     const creditOrders = await Order.find(filter).select(
-//       "_id orderNumber finalAmount paidAmount paymentMethod createdAt"
-//     );
-
-//     const orderIds = creditOrders.map((order) => order._id);
-
-//     // Get all credit records for these orders
-//     const creditRecords = await CreditRecord.find({
-//       orderId: { $in: orderIds },
-//       isDeleted: false,
-//     }).select("orderId paidAmount paymentMethod paymentDate");
-
-//     // Create a map of orderId to credit records
-//     const creditRecordsByOrder = {};
-//     creditRecords.forEach((record) => {
-//       const orderIdStr = record.orderId.toString();
-//       if (!creditRecordsByOrder[orderIdStr]) {
-//         creditRecordsByOrder[orderIdStr] = [];
-//       }
-//       creditRecordsByOrder[orderIdStr].push(record);
-//     });
-
-//     // Calculate initial payments and group by payment method
-//     const initialPaymentByMethod = {};
-//     const creditPaymentByMethod = {};
-//     let totalFinalAmount = 0;
-//     let totalPaidAmount = 0;
-//     let totalInitialPaidAmount = 0;
-//     let totalCreditPaidAmount = 0;
-//     let totalRemainingBalance = 0;
-//     let orderCount = 0;
-
-//     creditOrders.forEach((order) => {
-//       const orderIdStr = order._id.toString();
-//       const creditRecordsForOrder = creditRecordsByOrder[orderIdStr] || [];
-
-//       // Calculate total from credit records
-//       const totalCreditPaidForOrder = creditRecordsForOrder.reduce(
-//         (sum, record) => sum + (record.paidAmount || 0),
-//         0
-//       );
-
-//       // Calculate initial paid amount: order.paidAmount - total from credit records
-//       // Note: order.paidAmount includes initial + all credit payments (denormalized)
-//       const initialPaidAmount = Math.max(
-//         0,
-//         (order.paidAmount || 0) - totalCreditPaidForOrder
-//       );
-
-//       // Get initial payment method from order
-//       const initialPaymentMethod = order.paymentMethod || "cash";
-
-//       // Aggregate initial payments by payment method
-//       if (!initialPaymentByMethod[initialPaymentMethod]) {
-//         initialPaymentByMethod[initialPaymentMethod] = {
-//           paymentMethod: initialPaymentMethod,
-//           totalPaidAmount: 0,
-//           orderCount: 0,
-//         };
-//       }
-//       initialPaymentByMethod[initialPaymentMethod].totalPaidAmount +=
-//         initialPaidAmount;
-//       if (initialPaidAmount > 0) {
-//         initialPaymentByMethod[initialPaymentMethod].orderCount += 1;
-//       }
-
-//       // Aggregate credit record payments by payment method
-//       creditRecordsForOrder.forEach((record) => {
-//         const paymentMethod = record.paymentMethod || "cash";
-//         if (!creditPaymentByMethod[paymentMethod]) {
-//           creditPaymentByMethod[paymentMethod] = {
-//             paymentMethod: paymentMethod,
-//             totalPaidAmount: 0,
-//             recordCount: 0,
-//           };
-//         }
-//         creditPaymentByMethod[paymentMethod].totalPaidAmount +=
-//           record.paidAmount || 0;
-//         creditPaymentByMethod[paymentMethod].recordCount += 1;
-//       });
-
-//       // Aggregate totals
-//       totalFinalAmount += order.finalAmount || 0;
-//       totalPaidAmount += order.paidAmount || 0;
-//       totalInitialPaidAmount += initialPaidAmount;
-//       totalCreditPaidAmount += totalCreditPaidForOrder;
-//       totalRemainingBalance += Math.max(
-//         0,
-//         (order.finalAmount || 0) - (order.paidAmount || 0)
-//       );
-//       orderCount += 1;
-//     });
-
-//     // Convert to arrays and sort
-//     const initialPayments = Object.values(initialPaymentByMethod)
-//       .filter((item) => item.totalPaidAmount > 0)
-//       .sort((a, b) => b.totalPaidAmount - a.totalPaidAmount);
-
-//     const creditPayments = Object.values(creditPaymentByMethod)
-//       .filter((item) => item.totalPaidAmount > 0)
-//       .sort((a, b) => b.totalPaidAmount - a.totalPaidAmount);
-
-//     // Get date range info
-//     const { startDate, endDate } = req.query;
-//     const dateRange = {
-//       startDate: parsedStartDate || (startDate ? new Date(startDate) : null),
-//       endDate: parsedEndDate || (endDate ? new Date(endDate) : null),
-//     };
-
-//     res.status(200).json({
-//       success: true,
-//       message: "Credit sale report fetched successfully",
-//       data: {
-//         storefront: storefront
-//           ? {
-//               _id: storefront._id,
-//               locationName: storefront.locationName,
-//               locationCode: storefront.locationCode,
-//             }
-//           : null,
-//         dateRange,
-//         totals: {
-//           totalFinalAmount,
-//           totalPaidAmount,
-//           totalInitialPaidAmount,
-//           totalCreditPaidAmount,
-//           totalRemainingBalance,
-//           orderCount,
-//           creditRecordCount: creditRecords.length,
-//         },
-//         initialPayments: initialPayments,
-//         creditPayments: creditPayments,
-//       },
-//     });
-//   }
-// );
-
 export const getCreditSaleReportByStorefrontId = asyncErrorHandler(
   async (req, res, next) => {
     const { storefrontId } = req.query;
@@ -506,7 +306,7 @@ export const getCreditSaleReportByStorefrontId = asyncErrorHandler(
         _id: storefrontId,
         type: "storefront",
         isDeleted: false,
-      });
+      }).lean();
 
       if (!storefront) {
         return next(new CustomError(404, "Storefront not found"));
@@ -550,18 +350,20 @@ export const getCreditSaleReportByStorefrontId = asyncErrorHandler(
       return next(new CustomError(400, error.message || "Invalid date filter"));
     }
 
-    // Get all credit orders
-    const creditOrders = await Order.find(filter).select(
-      "_id orderNumber finalAmount paidAmount paymentMethod createdAt"
-    );
+    // Get all credit orders with lean() for performance
+    const creditOrders = await Order.find(filter)
+      .select("_id orderNumber finalAmount paidAmount paymentMethod createdAt")
+      .lean();
 
     const orderIds = creditOrders.map((order) => order._id);
 
-    // Get all credit records for these orders
+    // Get all credit records for these orders with lean()
     const creditRecords = await CreditRecord.find({
       orderId: { $in: orderIds },
       isDeleted: false,
-    }).select("orderId paidAmount paymentMethod paymentDate");
+    })
+      .select("orderId paidAmount paymentMethod paymentDate")
+      .lean();
 
     // Create a map of orderId to credit records
     const creditRecordsByOrder = {};
@@ -611,8 +413,9 @@ export const getCreditSaleReportByStorefrontId = asyncErrorHandler(
           orderCount: 0,
         };
       }
-      initialPaymentByMethod[initialPaymentMethod].totalPaidAmount +=
-        initialPaidAmount;
+      initialPaymentByMethod[initialPaymentMethod].totalPaidAmount = Math.round(
+        (initialPaymentByMethod[initialPaymentMethod].totalPaidAmount + initialPaidAmount) * 100
+      ) / 100;
       if (initialPaidAmount > 0) {
         initialPaymentByMethod[initialPaymentMethod].orderCount += 1;
       }
@@ -627,8 +430,9 @@ export const getCreditSaleReportByStorefrontId = asyncErrorHandler(
             recordCount: 0,
           };
         }
-        creditPaymentByMethod[paymentMethod].totalPaidAmount +=
-          record.paidAmount || 0;
+        creditPaymentByMethod[paymentMethod].totalPaidAmount = Math.round(
+          (creditPaymentByMethod[paymentMethod].totalPaidAmount + (record.paidAmount || 0)) * 100
+        ) / 100;
         creditPaymentByMethod[paymentMethod].recordCount += 1;
       });
 
@@ -673,11 +477,11 @@ export const getCreditSaleReportByStorefrontId = asyncErrorHandler(
           : null,
         dateRange,
         totals: {
-          totalFinalAmount,
-          totalPaidAmount,
-          totalInitialPaidAmount,
-          totalCreditPaidAmount,
-          totalRemainingBalance,
+          totalFinalAmount: Math.round(totalFinalAmount * 100) / 100,
+          totalPaidAmount: Math.round(totalPaidAmount * 100) / 100,
+          totalInitialPaidAmount: Math.round(totalInitialPaidAmount * 100) / 100,
+          totalCreditPaidAmount: Math.round(totalCreditPaidAmount * 100) / 100,
+          totalRemainingBalance: Math.round(totalRemainingBalance * 100) / 100,
           orderCount,
           creditRecordCount: creditRecords.length,
         },
@@ -707,7 +511,7 @@ export const getProductSalesReportByStorefrontId = asyncErrorHandler(
         _id: storefrontId,
         type: "storefront",
         isDeleted: false,
-      });
+      }).lean();
 
       if (!storefront) {
         return next(new CustomError(404, "Storefront not found"));
@@ -897,20 +701,20 @@ export const getProductSalesReportByStorefrontId = asyncErrorHandler(
           subCategory: 1,
           brand: 1,
           unitOfMeasure: 1,
-          totalQuantity: 1,
-          totalRevenue: 1,
+          totalQuantity: { $round: ["$totalQuantity", 3] },
+          totalRevenue: { $round: ["$totalRevenue", 2] },
           orderCount: 1,
           averageUnitPrice: { $round: ["$averageUnitPrice", 2] },
           minUnitPrice: 1,
           maxUnitPrice: 1,
-          retailQuantity: 1,
-          wholesaleQuantity: 1,
-          totalIfRetail: 1,
-          wholesaleDiscount: 1,
+          retailQuantity: { $round: ["$retailQuantity", 3] },
+          wholesaleQuantity: { $round: ["$wholesaleQuantity", 3] },
+          totalIfRetail: { $round: ["$totalIfRetail", 2] },
+          wholesaleDiscount: { $round: ["$wholesaleDiscount", 2] },
           wholesalePercentage: 1,
           buyingPrice: 1,
-          totalBuyingPrice: 1,
-          totalProfit: 1,
+          totalBuyingPrice: { $round: ["$totalBuyingPrice", 2] },
+          totalProfit: { $round: ["$totalProfit", 2] },
           rawUomData: 1,
         },
       },
@@ -927,7 +731,7 @@ export const getProductSalesReportByStorefrontId = asyncErrorHandler(
       }
       product.uomBreakdown = Object.keys(breakdown).map((uom) => ({
         uom,
-        quantity: breakdown[uom],
+        quantity: Math.round(breakdown[uom] * 1000) / 1000,
       }));
       delete product.rawUomData;
     });
@@ -935,14 +739,14 @@ export const getProductSalesReportByStorefrontId = asyncErrorHandler(
     // Calculate totals across all products
     const totals = productSalesReport.reduce(
       (acc, item) => {
-        acc.totalQuantity += item.totalQuantity;
-        acc.totalRevenue += item.totalRevenue;
-        acc.totalBuyingPrice += item.totalBuyingPrice;
-        acc.totalProfit += item.totalProfit;
-        acc.totalIfRetail += item.totalIfRetail;
-        acc.totalWholesaleDiscount += item.wholesaleDiscount;
-        acc.totalRetailQuantity += item.retailQuantity;
-        acc.totalWholesaleQuantity += item.wholesaleQuantity;
+        acc.totalQuantity += item.totalQuantity || 0;
+        acc.totalRevenue += item.totalRevenue || 0;
+        acc.totalBuyingPrice += item.totalBuyingPrice || 0;
+        acc.totalProfit += item.totalProfit || 0;
+        acc.totalIfRetail += item.totalIfRetail || 0;
+        acc.totalWholesaleDiscount += item.wholesaleDiscount || 0;
+        acc.totalRetailQuantity += item.retailQuantity || 0;
+        acc.totalWholesaleQuantity += item.wholesaleQuantity || 0;
         acc.totalUniqueProducts += 1;
         return acc;
       },
@@ -979,14 +783,14 @@ export const getProductSalesReportByStorefrontId = asyncErrorHandler(
           : null,
         dateRange,
         totals: {
-          totalQuantity: totals.totalQuantity,
-          totalRevenue: totals.totalRevenue,
-          totalBuyingPrice: totals.totalBuyingPrice,
-          totalProfit: totals.totalProfit,
-          totalIfRetail: totals.totalIfRetail,
-          totalWholesaleDiscount: totals.totalWholesaleDiscount,
-          totalRetailQuantity: totals.totalRetailQuantity,
-          totalWholesaleQuantity: totals.totalWholesaleQuantity,
+          totalQuantity: Math.round(totals.totalQuantity * 1000) / 1000,
+          totalRevenue: Math.round(totals.totalRevenue * 100) / 100,
+          totalBuyingPrice: Math.round(totals.totalBuyingPrice * 100) / 100,
+          totalProfit: Math.round(totals.totalProfit * 100) / 100,
+          totalIfRetail: Math.round(totals.totalIfRetail * 100) / 100,
+          totalWholesaleDiscount: Math.round(totals.totalWholesaleDiscount * 100) / 100,
+          totalRetailQuantity: Math.round(totals.totalRetailQuantity * 1000) / 1000,
+          totalWholesaleQuantity: Math.round(totals.totalWholesaleQuantity * 1000) / 1000,
           totalUniqueProducts: totals.totalUniqueProducts,
         },
         products: productSalesReport,
@@ -1012,7 +816,7 @@ export const getCreditPersonaProductReport = asyncErrorHandler(
     // Validate credit persona exists
     const creditPersona = await CreditPerson.findOne({
       _id: creditPersonaId,
-    });
+    }).lean();
 
     if (!creditPersona) {
       return next(new CustomError(404, "Credit persona not found"));
@@ -1032,7 +836,7 @@ export const getCreditPersonaProductReport = asyncErrorHandler(
         _id: storefrontId,
         type: "storefront",
         isDeleted: false,
-      });
+      }).lean();
 
       if (!storefront) {
         return next(new CustomError(404, "Storefront not found"));
@@ -1138,7 +942,7 @@ export const getCreditPersonaProductReport = asyncErrorHandler(
           unitOfMeasure: {
             $ifNull: ["$inventory.unitOfMeasure", "$unitOfMeasure"],
           },
-          totalQuantity: 1,
+          totalQuantity: { $round: ["$totalQuantity", 3] },
           orderCount: 1,
         },
       },
@@ -1147,9 +951,9 @@ export const getCreditPersonaProductReport = asyncErrorHandler(
     // Calculate totals across all products
     const totals = productReport.reduce(
       (acc, item) => {
-        acc.totalQuantity += item.totalQuantity;
+        acc.totalQuantity += item.totalQuantity || 0;
         acc.totalUniqueProducts += 1;
-        acc.totalOrderCount += item.orderCount;
+        acc.totalOrderCount += item.orderCount || 0;
         return acc;
       },
       {
@@ -1184,7 +988,7 @@ export const getCreditPersonaProductReport = asyncErrorHandler(
           : null,
         dateRange,
         totals: {
-          totalQuantity: totals.totalQuantity,
+          totalQuantity: Math.round(totals.totalQuantity * 1000) / 1000,
           totalUniqueProducts: totals.totalUniqueProducts,
           totalOrderCount: totals.totalOrderCount,
         },
@@ -1213,7 +1017,7 @@ export const getSaleProductsAnalyticsByCreditPerson = asyncErrorHandler(
         _id: storefrontId,
         type: "storefront",
         isDeleted: false,
-      });
+      }).lean();
 
       if (!storefront) {
         return next(new CustomError(404, "Storefront not found"));
@@ -1361,7 +1165,7 @@ export const getSaleProductsAnalyticsByCreditPerson = asyncErrorHandler(
           category: "$inventory.category",
           subCategory: "$inventory.subCategory",
           brand: "$inventory.brand",
-          totalQuantity: 1,
+          totalQuantity: { $round: ["$totalQuantity", 3] },
           totalOrders: 1,
           uniqueCreditPersonsCount: 1,
           creditPersons: 1,
@@ -1369,7 +1173,7 @@ export const getSaleProductsAnalyticsByCreditPerson = asyncErrorHandler(
       },
     ]);
 
-    // Now fetch credit person details separately and merge
+    // Now fetch credit person details separately with lean() and merge
     const allCreditPersonIds = new Set();
     productAnalytics.forEach((product) => {
       product.creditPersons.forEach((cp) => {
@@ -1379,7 +1183,9 @@ export const getSaleProductsAnalyticsByCreditPerson = asyncErrorHandler(
 
     const creditPersonDetails = await CreditPerson.find({
       _id: { $in: Array.from(allCreditPersonIds) },
-    }).select("_id name phone");
+    })
+      .select("_id name phone")
+      .lean();
 
     // Create a map for quick lookup
     const creditPersonMap = {};
@@ -1398,6 +1204,7 @@ export const getSaleProductsAnalyticsByCreditPerson = asyncErrorHandler(
           cp.name = "Unknown";
           cp.phone = "";
         }
+        cp.totalQuantity = Math.round((cp.totalQuantity || 0) * 1000) / 1000;
       });
 
       // Sort credit persons by quantity descending
@@ -1407,10 +1214,10 @@ export const getSaleProductsAnalyticsByCreditPerson = asyncErrorHandler(
     // Calculate totals across all products
     const totals = productAnalytics.reduce(
       (acc, item) => {
-        acc.totalQuantity += item.totalQuantity;
-        acc.totalOrders += item.totalOrders;
+        acc.totalQuantity += item.totalQuantity || 0;
+        acc.totalOrders += item.totalOrders || 0;
         acc.totalUniqueProducts += 1;
-        acc.totalUniqueCreditPersons += item.uniqueCreditPersonsCount;
+        acc.totalUniqueCreditPersons += item.uniqueCreditPersonsCount || 0;
         return acc;
       },
       {
@@ -1441,7 +1248,7 @@ export const getSaleProductsAnalyticsByCreditPerson = asyncErrorHandler(
           : null,
         dateRange,
         totals: {
-          totalQuantity: totals.totalQuantity,
+          totalQuantity: Math.round(totals.totalQuantity * 1000) / 1000,
           totalOrders: totals.totalOrders,
           totalUniqueProducts: totals.totalUniqueProducts,
           totalUniqueCreditPersons: totals.totalUniqueCreditPersons,
@@ -1471,7 +1278,7 @@ export const getFocProductsReport = asyncErrorHandler(
         _id: storefrontId,
         type: "storefront",
         isDeleted: false,
-      });
+      }).lean();
 
       if (!storefront) {
         return next(new CustomError(404, "Storefront not found"));
@@ -1591,8 +1398,8 @@ export const getFocProductsReport = asyncErrorHandler(
           category: { $ifNull: ["$category", "N/A"] },
           unitOfMeasure: { $ifNull: ["$unitOfMeasure", "piece"] },
           sellingPrice: { $ifNull: ["$sellingPrice", 0] },
-          totalQuantity: 1,
-          totalValue: 1,
+          totalQuantity: { $round: ["$totalQuantity", 3] },
+          totalValue: { $round: ["$totalValue", 2] },
           orderCount: 1,
           rawUomData: 1,
         },
@@ -1610,7 +1417,7 @@ export const getFocProductsReport = asyncErrorHandler(
       }
       product.uomBreakdown = Object.keys(breakdown).map((uom) => ({
         uom,
-        quantity: breakdown[uom],
+        quantity: Math.round(breakdown[uom] * 1000) / 1000,
       }));
       delete product.rawUomData;
     });
@@ -1618,9 +1425,9 @@ export const getFocProductsReport = asyncErrorHandler(
     // Calculate totals across all FOC products
     const totals = focProductsReport.reduce(
       (acc, product) => {
-        acc.totalQuantity += product.totalQuantity;
-        acc.totalValue += product.totalValue;
-        acc.totalOrders += product.orderCount;
+        acc.totalQuantity += product.totalQuantity || 0;
+        acc.totalValue += product.totalValue || 0;
+        acc.totalOrders += product.orderCount || 0;
         return acc;
       },
       { totalQuantity: 0, totalValue: 0, totalOrders: 0 },
@@ -1644,7 +1451,11 @@ export const getFocProductsReport = asyncErrorHandler(
             }
           : null,
         dateRange,
-        totals,
+        totals: {
+          totalQuantity: Math.round(totals.totalQuantity * 1000) / 1000,
+          totalValue: Math.round(totals.totalValue * 100) / 100,
+          totalOrders: totals.totalOrders,
+        },
         products: focProductsReport,
       },
     });

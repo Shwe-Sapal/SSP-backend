@@ -242,6 +242,12 @@ orderSchema.index({ paymentType: 1 }); // For filtering by payment type
 orderSchema.index({ orderNumber: 1, isDeleted: 1 }); // For finding latest order by date prefix
 orderSchema.index({ orderNumber: 1, createdAt: -1 }); // For sorting by orderNumber and date
 
+// Compound indexes for high-speed sales reports and analytics
+orderSchema.index({ storefrontId: 1, orderStatus: 1, isDeleted: 1, createdAt: -1 });
+orderSchema.index({ isDeleted: 1, orderStatus: 1, createdAt: -1 });
+orderSchema.index({ paymentType: 1, paymentMethod: 1, isDeleted: 1, createdAt: -1 });
+orderSchema.index({ "ordersProducts.inventoryId": 1, isDeleted: 1, createdAt: -1 });
+
 const Order = mongoose.model("Order", orderSchema);
 
 export default Order;
