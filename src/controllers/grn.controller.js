@@ -685,7 +685,11 @@ export const getAllGRN = asyncErrorHandler(async (req, res, next) => {
   }
 
   if (status) {
-    query.status = status;
+    if (typeof status === "string" && status.includes(",")) {
+      query.status = { $in: status.split(",").map((s) => s.trim()) };
+    } else {
+      query.status = status;
+    }
   }
 
   if (search) {

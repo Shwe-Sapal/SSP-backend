@@ -8,6 +8,7 @@ import Inventory from "../models/inventory.model.js";
 import { convertToBaseUnit, getEffectiveBaseFactor } from "../utils/uom.utils.js";
 import { asyncErrorHandler } from "../utils/asyncErrorHandler.js";
 import CustomError from "../utils/customError.js";
+import { createDateFilter } from "../utils/dateFilter.utils.js";
 
 // Helper to aggregate line items to prevent race conditions during validation and transfer
 // when multiple line items for the same product are sent simultaneously.
@@ -1760,19 +1761,122 @@ export const transferStorefrontToStorefront = asyncErrorHandler(
 );
 
 export const getTransfers = asyncErrorHandler(async (req, res, next) => {
-  const transfers = await Transfer.find()
-    .populate("transferredBy", "name role")
-    .populate("lineItems.inventoryId", "productName productCode SKU unitOfMeasure uomConversions")
-    .populate("destinationWarehouseId", "locationName locationCode")
-    .populate("destinationStorefrontId", "locationName locationCode")
-    .lean();
-  if (!transfers) {
-    return next(new CustomError(404, "Transfers not found"));
+  const {
+    page = 1,
+    limit = 10,
+    all,
+    search,
+    status,
+    sourceType,
+    sourceId,
+    destinationWarehouseId,
+    destinationStorefrontId,
+    sortBy = "createdAt",
+    sortOrder = "desc",
+    includeDeleted = false,
+  } = req.query;
+
+  const query = {};
+
+  if (!includeDeleted || includeDeleted === "false") {
+    query.isDeleted = false;
   }
+
+  if (status) {
+    query.status = status;
+  }
+
+  if (sourceType) {
+    query.sourceType = sourceType;
+  }
+
+  if (sourceId && mongoose.Types.ObjectId.isValid(sourceId)) {
+    query.sourceId = sourceId;
+  }
+
+  if (destinationWarehouseId && mongoose.Types.ObjectId.isValid(destinationWarehouseId)) {
+    query.destinationWarehouseId = destinationWarehouseId;
+  }
+
+  if (destinationStorefrontId && mongoose.Types.ObjectId.isValid(destinationStorefrontId)) {
+    query.destinationStorefrontId = destinationStorefrontId;
+  }
+
+  if (search) {
+    query.$or = [
+      { transferNumber: { $regex: search, $options: "i" } },
+      { notes: { $regex: search, $options: "i" } },
+    ];
+  }
+
+  try {
+    const dateFilter = createDateFilter(req.query, "transferDate", false);
+    Object.assign(query, dateFilter);
+  } catch (error) {
+    if (error instanceof CustomError) {
+      return next(error);
+    }
+    return next(new CustomError(400, error.message || "Invalid date filter"));
+  }
+
+  const sort = {};
+  sort[sortBy] = sortOrder === "asc" ? 1 : -1;
+
+  if (all === "true") {
+    const transfers = await Transfer.find(query)
+      .populate("transferredBy", "name role")
+      .populate(
+        "lineItems.inventoryId",
+        "productName productCode SKU unitOfMeasure uomConversions"
+      )
+      .populate("destinationWarehouseId", "locationName locationCode")
+      .populate("destinationStorefrontId", "locationName locationCode")
+      .sort(sort)
+      .lean();
+
+    return res.status(200).json({
+      success: true,
+      message: "Transfers fetched successfully",
+      data: transfers,
+      pagination: {
+        currentPage: 1,
+        totalPages: 1,
+        totalItems: transfers.length,
+        itemsPerPage: transfers.length,
+      },
+    });
+  }
+
+  const pageNum = Math.max(1, parseInt(page) || 1);
+  const limitNum = Math.max(1, parseInt(limit) || 10);
+  const skip = (pageNum - 1) * limitNum;
+
+  const [transfers, total] = await Promise.all([
+    Transfer.find(query)
+      .populate("transferredBy", "name role")
+      .populate(
+        "lineItems.inventoryId",
+        "productName productCode SKU unitOfMeasure uomConversions"
+      )
+      .populate("destinationWarehouseId", "locationName locationCode")
+      .populate("destinationStorefrontId", "locationName locationCode")
+      .sort(sort)
+      .skip(skip)
+      .limit(limitNum)
+      .lean(),
+    Transfer.countDocuments(query),
+  ]);
+
   res.status(200).json({
     success: true,
     message: "Transfers fetched successfully",
     data: transfers,
+    pagination: {
+      currentPage: pageNum,
+      totalPages: Math.ceil(total / limitNum) || 1,
+      totalItems: total,
+      itemsPerPage: limitNum,
+    },
   });
 });
 

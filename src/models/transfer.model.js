@@ -203,6 +203,12 @@ transferSchema.index({ status: 1, isDeleted: 1 }); // Compound index
 transferSchema.index({ sourceType: 1, sourceId: 1, status: 1 }); // Compound index for GRN/Warehouse queries
 transferSchema.index({ sourceType: 1, destinationStorefrontId: 1 }); // For Warehouse → Storefront queries
 transferSchema.index({ transferredBy: 1 }); // Index for admin who created the transfer
+transferSchema.index({ sourceType: 1, sourceId: 1, createdAt: -1 });
+transferSchema.index({ destinationWarehouseId: 1, createdAt: -1 });
+transferSchema.index({ destinationStorefrontId: 1, createdAt: -1 });
+transferSchema.index({ status: 1, createdAt: -1 });
+transferSchema.index({ isDeleted: 1, createdAt: -1 });
+transferSchema.index({ transferDate: -1 });
 
 // Virtual for total transfer quantity
 transferSchema.virtual("totalQuantity").get(function () {
@@ -214,15 +220,15 @@ transferSchema.statics.generateTransferNumber = async function () {
   const year = new Date().getFullYear();
   const prefix = `TRF-${year}-`;
 
-  // Find the latest transfer for this year (excluding deleted)
+  // Find the latest transfer for this year across all documents (including soft-deleted)
   const latestTransfer = await this.findOne({
     transferNumber: new RegExp(
       `^${prefix.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`
     ),
-    isDeleted: false,
   })
-    .sort({ createdAt: -1 })
-    .select("transferNumber");
+    .sort({ transferNumber: -1, createdAt: -1 })
+    .select("transferNumber")
+    .lean();
 
   let sequence = 1;
   if (latestTransfer && latestTransfer.transferNumber) {
@@ -236,8 +242,14 @@ transferSchema.statics.generateTransferNumber = async function () {
     }
   }
 
-  // Format: TRF-YYYY-NNNN (e.g., TRF-2024-0001)
-  return `${prefix}${sequence.toString().padStart(4, "0")}`;
+  // Ensure sequence uniqueness against any existing document
+  let transferNumber = `${prefix}${sequence.toString().padStart(4, "0")}`;
+  while (await this.exists({ transferNumber })) {
+    sequence++;
+    transferNumber = `${prefix}${sequence.toString().padStart(4, "0")}`;
+  }
+
+  return transferNumber;
 };
 
 // Instance method to update stock atomically (call when transfer is completed)
@@ -560,16 +572,26 @@ transferSchema.methods._updateWarehouseToStorefrontStock = async function (
   }
 
   const itemsToTransfer = Array.from(aggregatedOps.values());
+  const transferItemInventoryIds = itemsToTransfer.map(item => item.inventoryId);
+
+  // Prefetch all source stocks in a single query
+  const sourceStocks = await WarehouseStock.find({
+    inventoryId: { $in: transferItemInventoryIds },
+    warehouseId: this.sourceId,
+  }).session(session || null);
+
+  const sourceStockMap = new Map();
+  for (const s of sourceStocks) {
+    if (!sourceStockMap.has(s.inventoryId.toString())) {
+      sourceStockMap.set(s.inventoryId.toString(), s);
+    }
+  }
+
   const srcOps = [];
   const destOps = [];
 
   for (const item of itemsToTransfer) {
-    // Since we ignore batchNumber, we just find the FIRST stock record to deduct from.
-    // If they want exactly ONE total sum per product, we decrement the legacy batch.
-    const sourceStock = await WarehouseStock.findOne({
-      inventoryId: item.inventoryId,
-      warehouseId: this.sourceId
-    }).session(session || null);
+    const sourceStock = sourceStockMap.get(item.inventoryId.toString());
 
     if (!sourceStock) {
       throw new Error(`Source stock not found for inventory ${item.inventoryId}`);
@@ -658,16 +680,26 @@ transferSchema.methods._updateWarehouseToWarehouseStock = async function (
   }
 
   const itemsToTransfer = Array.from(aggregatedOps.values());
+  const transferItemInventoryIds = itemsToTransfer.map(item => item.inventoryId);
+
+  // Prefetch all source stocks in a single query
+  const sourceStocks = await WarehouseStock.find({
+    inventoryId: { $in: transferItemInventoryIds },
+    warehouseId: this.sourceId,
+  }).session(session || null);
+
+  const sourceStockMap = new Map();
+  for (const s of sourceStocks) {
+    if (!sourceStockMap.has(s.inventoryId.toString())) {
+      sourceStockMap.set(s.inventoryId.toString(), s);
+    }
+  }
+
   const srcOps = [];
   const destOps = [];
 
   for (const item of itemsToTransfer) {
-    // Since we ignore batchNumber, we just find the FIRST stock record to deduct from.
-    // If they want exactly ONE total sum per product, we decrement the legacy batch.
-    const sourceStock = await WarehouseStock.findOne({
-      inventoryId: item.inventoryId,
-      warehouseId: this.sourceId
-    }).session(session || null);
+    const sourceStock = sourceStockMap.get(item.inventoryId.toString());
 
     if (!sourceStock) {
       throw new Error(`Source stock not found for inventory ${item.inventoryId}`);
@@ -757,16 +789,26 @@ transferSchema.methods._updateStorefrontToWarehouseStock = async function (
   }
 
   const itemsToTransfer = Array.from(aggregatedOps.values());
+  const transferItemInventoryIds = itemsToTransfer.map(item => item.inventoryId);
+
+  // Prefetch all source stocks in a single query
+  const sourceStocks = await StorefrontInventory.find({
+    inventoryId: { $in: transferItemInventoryIds },
+    storefrontId: this.sourceId,
+  }).session(session || null);
+
+  const sourceStockMap = new Map();
+  for (const s of sourceStocks) {
+    if (!sourceStockMap.has(s.inventoryId.toString())) {
+      sourceStockMap.set(s.inventoryId.toString(), s);
+    }
+  }
+
   const srcOps = [];
   const destOps = [];
 
   for (const item of itemsToTransfer) {
-    // Since we ignore batchNumber, we just find the FIRST stock record to deduct from.
-    // If they want exactly ONE total sum per product, we decrement the legacy batch.
-    const sourceStock = await StorefrontInventory.findOne({
-      inventoryId: item.inventoryId,
-      storefrontId: this.sourceId
-    }).session(session || null);
+    const sourceStock = sourceStockMap.get(item.inventoryId.toString());
 
     if (!sourceStock) {
       throw new Error(`Source stock not found for inventory ${item.inventoryId}`);
@@ -855,33 +897,32 @@ transferSchema.methods._updateStorefrontToStorefrontStock = async function (
   }
 
   const itemsToTransfer = Array.from(aggregatedOps.values());
+  const transferItemInventoryIds = itemsToTransfer.map(item => item.inventoryId);
+
+  // Prefetch all source stocks in a single query
+  const sourceStocks = await StorefrontInventory.find({
+    inventoryId: { $in: transferItemInventoryIds },
+    storefrontId: this.sourceId,
+  }).session(session || null);
+
+  const sourceStockMap = new Map();
+  for (const s of sourceStocks) {
+    if (!sourceStockMap.has(s.inventoryId.toString())) {
+      sourceStockMap.set(s.inventoryId.toString(), s);
+    }
+  }
+
   const srcOps = [];
   const destOps = [];
 
   for (const item of itemsToTransfer) {
-    // Since we ignore batchNumber, we just find the FIRST stock record to deduct from.
-    // If they want exactly ONE total sum per product, we decrement the legacy batch.
-    const sourceStock = await StorefrontInventory.findOne({
-      inventoryId: item.inventoryId,
-      storefrontId: this.sourceId
-    }).session(session || null);
+    const sourceStock = sourceStockMap.get(item.inventoryId.toString());
 
     if (!sourceStock) {
       throw new Error(`Source stock not found for inventory ${item.inventoryId}`);
     }
 
-    // -------------------------------------------------------------------------
     // UOM-aware stock validation
-    // -------------------------------------------------------------------------
-    // `item.trueBaseQty` is already expressed in the product's base unit.
-    // `sourceStock.quantity` may be stored as a raw amount in a higher-order unit
-    // (e.g. 11 Dozens instead of 132 pieces). We must convert it to true base
-    // units before comparing to avoid false "insufficient stock" errors.
-    //
-    // We derive the storageToBaseFactor by inspecting the product's UOM conversions:
-    //   • If the product has a default selling/storage unit (isDefaultSellingUnit=true),
-    //     we use that unit's factor as the raw-to-base multiplier.
-    //   • Otherwise we assume the DB stores base units (factor = 1).
     const product = productMap.get(item.inventoryId.toString());
     const productBaseUnit = product ? (product.unitOfMeasure || product.uom || "") : "";
     const productConversions = product ? (product.uomConversions || []) : [];
@@ -909,9 +950,6 @@ transferSchema.methods._updateStorefrontToStorefrontStock = async function (
       );
     }
 
-    // Compute how many raw storage units to deduct from the source record.
-    // If stored in base units (factor=1), rawDeduction === trueBaseQty.
-    // If stored in dozens (factor=12), rawDeduction = trueBaseQty / 12.
     const rawDeduction = storageToBaseFactor > 1
       ? item.trueBaseQty / storageToBaseFactor
       : item.trueBaseQty;
@@ -923,8 +961,6 @@ transferSchema.methods._updateStorefrontToStorefrontStock = async function (
       }
     });
 
-    // The destination receives `trueBaseQty` expressed in the SAME storage unit
-    // as the destination's existing records. Convert back to raw storage units.
     const rawAddition = storageToBaseFactor > 1
       ? item.trueBaseQty / storageToBaseFactor
       : item.trueBaseQty;

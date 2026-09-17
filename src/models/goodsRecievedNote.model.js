@@ -252,14 +252,13 @@ goodsRecievedNoteSchema.statics.generateGRNNumber = async function () {
   const day = String(now.getDate()).padStart(2, "0");
   const prefix = `GRN-${year}-${month}-${day}-`;
 
-  // Find the latest GRN for today (excluding deleted)
-  // Use regex to match GRN numbers starting with today's date prefix
+  // Find the latest GRN for today (including soft-deleted)
   const latestGRN = await this.findOne({
-    grnNumber: new RegExp(`^${prefix.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`), // Escape special regex chars
-    isDeleted: false, // Exclude deleted GRNs
+    grnNumber: new RegExp(`^${prefix.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`),
   })
-    .sort({ createdAt: -1 }) // Sort by creation date instead of grnNumber string
-    .select("grnNumber");
+    .sort({ grnNumber: -1, createdAt: -1 })
+    .select("grnNumber")
+    .lean();
 
   let sequence = 1;
   if (latestGRN && latestGRN.grnNumber) {
@@ -274,8 +273,14 @@ goodsRecievedNoteSchema.statics.generateGRNNumber = async function () {
     }
   }
 
-  // Format: GRN-YYYY-MM-DD-NNNNNN (e.g., GRN-2024-01-14-000001)
-  return `${prefix}${sequence.toString().padStart(6, "0")}`;
+  // Ensure sequence uniqueness against any existing document
+  let grnNumber = `${prefix}${sequence.toString().padStart(6, "0")}`;
+  while (await this.exists({ grnNumber })) {
+    sequence++;
+    grnNumber = `${prefix}${sequence.toString().padStart(6, "0")}`;
+  }
+
+  return grnNumber;
 };
 
 // Static method to drop the unique index on purchasingId (one-time migration)
