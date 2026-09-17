@@ -15,7 +15,7 @@ export const getSaleReportByStorefrontId = asyncErrorHandler(
     let storefront = null;
 
     // If storefrontId is provided, validate and fetch storefront
-    if (storefrontId) {
+    if (storefrontId && storefrontId !== "all") {
       // Validate storefrontId
       if (!mongoose.Types.ObjectId.isValid(storefrontId)) {
         return next(new CustomError(400, "Invalid storefront ID format"));
@@ -40,7 +40,7 @@ export const getSaleReportByStorefrontId = asyncErrorHandler(
     };
 
     // Add storefrontId filter only if provided
-    if (storefrontId) {
+    if (storefrontId && storefrontId !== "all") {
       filter.storefrontId = new mongoose.Types.ObjectId(storefrontId);
     }
 
@@ -166,7 +166,7 @@ export const getPaymentMethodReportByStorefrontId = asyncErrorHandler(
     let storefront = null;
 
     // If storefrontId is provided, validate and fetch storefront
-    if (storefrontId) {
+    if (storefrontId && storefrontId !== "all") {
       // Validate storefrontId
       if (!mongoose.Types.ObjectId.isValid(storefrontId)) {
         return next(new CustomError(400, "Invalid storefront ID format"));
@@ -192,7 +192,7 @@ export const getPaymentMethodReportByStorefrontId = asyncErrorHandler(
     };
 
     // Add storefrontId filter only if provided
-    if (storefrontId) {
+    if (storefrontId && storefrontId !== "all") {
       filter.storefrontId = new mongoose.Types.ObjectId(storefrontId);
     }
 
@@ -295,7 +295,7 @@ export const getCreditSaleReportByStorefrontId = asyncErrorHandler(
     let storefront = null;
 
     // If storefrontId is provided, validate and fetch storefront
-    if (storefrontId) {
+    if (storefrontId && storefrontId !== "all") {
       // Validate storefrontId
       if (!mongoose.Types.ObjectId.isValid(storefrontId)) {
         return next(new CustomError(400, "Invalid storefront ID format"));
@@ -321,7 +321,7 @@ export const getCreditSaleReportByStorefrontId = asyncErrorHandler(
     };
 
     // Add storefrontId filter only if provided
-    if (storefrontId) {
+    if (storefrontId && storefrontId !== "all") {
       filter.storefrontId = new mongoose.Types.ObjectId(storefrontId);
     }
 
@@ -500,7 +500,7 @@ export const getProductSalesReportByStorefrontId = asyncErrorHandler(
     let storefront = null;
 
     // If storefrontId is provided, validate and fetch storefront
-    if (storefrontId) {
+    if (storefrontId && storefrontId !== "all") {
       // Validate storefrontId
       if (!mongoose.Types.ObjectId.isValid(storefrontId)) {
         return next(new CustomError(400, "Invalid storefront ID format"));
@@ -525,7 +525,7 @@ export const getProductSalesReportByStorefrontId = asyncErrorHandler(
     };
 
     // Add storefrontId filter only if provided
-    if (storefrontId) {
+    if (storefrontId && storefrontId !== "all") {
       filter.storefrontId = new mongoose.Types.ObjectId(storefrontId);
     }
 
@@ -825,7 +825,7 @@ export const getCreditPersonaProductReport = asyncErrorHandler(
     let storefront = null;
 
     // If storefrontId is provided, validate and fetch storefront
-    if (storefrontId) {
+    if (storefrontId && storefrontId !== "all") {
       // Validate storefrontId
       if (!mongoose.Types.ObjectId.isValid(storefrontId)) {
         return next(new CustomError(400, "Invalid storefront ID format"));
@@ -852,7 +852,7 @@ export const getCreditPersonaProductReport = asyncErrorHandler(
     };
 
     // Add storefrontId filter only if provided
-    if (storefrontId) {
+    if (storefrontId && storefrontId !== "all") {
       filter.storefrontId = new mongoose.Types.ObjectId(storefrontId);
     }
 
@@ -1006,7 +1006,7 @@ export const getSaleProductsAnalyticsByCreditPerson = asyncErrorHandler(
     let storefront = null;
 
     // If storefrontId is provided, validate and fetch storefront
-    if (storefrontId) {
+    if (storefrontId && storefrontId !== "all") {
       // Validate storefrontId
       if (!mongoose.Types.ObjectId.isValid(storefrontId)) {
         return next(new CustomError(400, "Invalid storefront ID format"));
@@ -1033,7 +1033,7 @@ export const getSaleProductsAnalyticsByCreditPerson = asyncErrorHandler(
     };
 
     // Add storefrontId filter only if provided
-    if (storefrontId) {
+    if (storefrontId && storefrontId !== "all") {
       filter.storefrontId = new mongoose.Types.ObjectId(storefrontId);
     }
 
@@ -1269,7 +1269,7 @@ export const getFocProductsReport = asyncErrorHandler(
     let storefront = null;
 
     // If storefrontId is provided, validate and fetch storefront
-    if (storefrontId) {
+    if (storefrontId && storefrontId !== "all") {
       if (!mongoose.Types.ObjectId.isValid(storefrontId)) {
         return next(new CustomError(400, "Invalid storefront ID format"));
       }
@@ -1291,7 +1291,7 @@ export const getFocProductsReport = asyncErrorHandler(
       orderStatus: "completed",
     };
 
-    if (storefrontId) {
+    if (storefrontId && storefrontId !== "all") {
       filter.storefrontId = new mongoose.Types.ObjectId(storefrontId);
     }
 
