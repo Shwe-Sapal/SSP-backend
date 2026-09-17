@@ -58,6 +58,7 @@ storefrontInventorySchema.index(
 // Indexes for better query performance
 storefrontInventorySchema.index({ storefrontId: 1 });
 storefrontInventorySchema.index({ inventoryId: 1 });
+storefrontInventorySchema.index({ storefrontId: 1, inventoryId: 1, quantity: 1, createdAt: 1 }); // FIFO query optimization
 storefrontInventorySchema.index({ storefrontId: 1, isLowStock: 1 }); // For low stock queries per storefront
 storefrontInventorySchema.index({ quantity: 1 }); // For sorting by quantity
 storefrontInventorySchema.index({ batchNumber: 1 });

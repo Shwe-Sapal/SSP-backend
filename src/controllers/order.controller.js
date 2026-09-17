@@ -294,30 +294,26 @@ export const createOrder = asyncErrorHandler(async (req, res, next) => {
             }
           }
 
-          // 5. Validate stock availability and deduct stock
-          // Fetch ALL batch records for each product in this storefront so we can
-          // accurately sum the total available quantity across all batches.
+          // 5. Validate stock availability and prepare bulk deduction operations
+          const bulkDeductOps = [];
+
           for (const [inventoryIdStr, totalBaseQty] of aggregatedQuantities.entries()) {
-            // Aggregate total quantity across ALL batches for this product + storefront
-            const stockAgg = await StorefrontInventory.aggregate([
-              {
-                $match: {
-                  inventoryId: new mongoose.Types.ObjectId(inventoryIdStr),
-                  storefrontId: new mongoose.Types.ObjectId(storefrontId),
-                },
-              },
-              {
-                $group: {
-                  _id: null,
-                  totalQty: { $sum: "$quantity" },
-                },
-              },
-            ]).session(session);
+            const productObjId = new mongoose.Types.ObjectId(inventoryIdStr);
 
-            const totalAvailable = stockAgg.length > 0 ? (stockAgg[0].totalQty || 0) : 0;
+            // Fetch all available non-zero batches sorted by creation date (FIFO)
+            const batchRecords = await StorefrontInventory.find(
+              {
+                inventoryId: productObjId,
+                storefrontId: new mongoose.Types.ObjectId(storefrontId),
+                quantity: { $gt: 0 },
+              },
+              null,
+              { session, sort: { createdAt: 1 } },
+            );
 
-            if (totalAvailable === 0 && stockAgg.length === 0) {
-              // No stock records exist for this product in this storefront
+            const totalAvailable = batchRecords.reduce((sum, b) => sum + b.quantity, 0);
+
+            if (batchRecords.length === 0) {
               const inventoryItem = inventoryMap.get(inventoryIdStr);
               throw new CustomError(
                 404,
@@ -327,7 +323,6 @@ export const createOrder = asyncErrorHandler(async (req, res, next) => {
               );
             }
 
-            // Check stock availability across all batches
             if (totalAvailable < totalBaseQty) {
               const inventoryItem = inventoryMap.get(inventoryIdStr);
               throw new CustomError(
@@ -341,29 +336,26 @@ export const createOrder = asyncErrorHandler(async (req, res, next) => {
             }
 
             // Deduct stock across batches in FIFO order (oldest batch first)
-            // Fetch all batch records sorted by creation date (ascending)
-            const batchRecords = await StorefrontInventory.find(
-              {
-                inventoryId: new mongoose.Types.ObjectId(inventoryIdStr),
-                storefrontId: new mongoose.Types.ObjectId(storefrontId),
-                quantity: { $gt: 0 },
-              },
-              null,
-              { session, sort: { createdAt: 1 } },
-            );
-
             let remaining = totalBaseQty;
+            const now = new Date();
             for (const batch of batchRecords) {
               if (remaining <= 0) break;
               const deduct = Math.min(batch.quantity, remaining);
-              batch.quantity -= deduct;
-              batch.lastUpdated = new Date();
-              await batch.save({ session });
+              
+              bulkDeductOps.push({
+                updateOne: {
+                  filter: { _id: batch._id },
+                  update: {
+                    $inc: { quantity: -deduct },
+                    $set: { lastUpdated: now },
+                  },
+                },
+              });
+
               remaining -= deduct;
             }
 
             if (remaining > 0) {
-              // Shouldn't happen after validation, but guard just in case
               const inventoryItem = inventoryMap.get(inventoryIdStr);
               throw new CustomError(
                 400,
@@ -372,6 +364,11 @@ export const createOrder = asyncErrorHandler(async (req, res, next) => {
                 }'. Shortage: ${remaining}`,
               );
             }
+          }
+
+          // Execute all batch stock deductions in a single atomic bulkWrite operation
+          if (bulkDeductOps.length > 0) {
+            await StorefrontInventory.bulkWrite(bulkDeductOps, { session });
           }
 
           // 6. Create order with calculated values
@@ -520,10 +517,19 @@ export const getAllOrders = asyncErrorHandler(async (req, res, next) => {
   };
 
   // Extract query parameters
-  const { paymentType, paymentMethod } = req.query;
+  const {
+    paymentType,
+    paymentMethod,
+    storefrontId,
+    creditPersonId,
+    search,
+    page,
+    limit,
+    inventoryId,
+  } = req.query;
 
   // Add paymentType filter if provided
-  if (paymentType !== undefined && paymentType !== "") {
+  if (paymentType !== undefined && paymentType !== "" && paymentType !== "all") {
     const validPaymentTypes = ["credit", "paid"];
     if (!validPaymentTypes.includes(paymentType)) {
       return next(
@@ -539,13 +545,32 @@ export const getAllOrders = asyncErrorHandler(async (req, res, next) => {
   }
 
   // Add paymentMethod filter if provided
-  if (paymentMethod !== undefined && paymentMethod !== "") {
-    // Common payment methods: cash, card, bank_transfer, mobile_payment, etc.
-    // Since the model doesn't enforce enum, we'll accept any string but trim it
+  if (paymentMethod !== undefined && paymentMethod !== "" && paymentMethod !== "all") {
     filter.paymentMethod = paymentMethod.trim();
   }
 
-  const { inventoryId } = req.query;
+  // Add storefrontId filter if provided
+  if (storefrontId && storefrontId !== "all") {
+    if (mongoose.Types.ObjectId.isValid(storefrontId)) {
+      filter.storefrontId = new mongoose.Types.ObjectId(storefrontId);
+    }
+  }
+
+  // Add creditPersonId filter if provided
+  if (creditPersonId && creditPersonId !== "all") {
+    if (mongoose.Types.ObjectId.isValid(creditPersonId)) {
+      filter.creditPersonId = new mongoose.Types.ObjectId(creditPersonId);
+    }
+  }
+
+  // Add search filter (search orderNumber or notes)
+  if (search && search.trim()) {
+    filter.$or = [
+      { orderNumber: { $regex: search.trim(), $options: "i" } },
+      { note: { $regex: search.trim(), $options: "i" } },
+    ];
+  }
+
   if (inventoryId) {
     if (!mongoose.Types.ObjectId.isValid(inventoryId)) {
       return next(new CustomError(400, "Invalid inventory ID format"));
@@ -566,13 +591,32 @@ export const getAllOrders = asyncErrorHandler(async (req, res, next) => {
     return next(new CustomError(400, error.message || "Invalid date filter"));
   }
 
-  const orders = await Order.find(filter)
+  // Determine pagination parameters
+  const isPaginationRequested =
+    page !== undefined || (limit !== undefined && limit !== "all" && limit !== "0");
+  const pageNum = parseInt(page) || 1;
+  const limitNum =
+    limit !== undefined && limit !== "all" && limit !== "0"
+      ? parseInt(limit)
+      : isPaginationRequested
+        ? 50
+        : 0;
+
+  const totalItems = await Order.countDocuments(filter);
+
+  let query = Order.find(filter)
     .populate("storefrontId", "locationName locationCode")
     .populate("ordersProducts.inventoryId", "productName productCode SKU unitOfMeasure")
     .populate("creditPersonId", "name phone address")
     .populate("soldBy", "name role")
-    .sort({ createdAt: -1 })
-    .lean();
+    .sort({ createdAt: -1 });
+
+  if (isPaginationRequested && limitNum > 0) {
+    const skip = (pageNum - 1) * limitNum;
+    query = query.skip(skip).limit(limitNum);
+  }
+
+  const orders = await query.lean();
 
   // Add line item total calculation accounting for conversion factor
   orders.forEach((order) => {
@@ -586,10 +630,19 @@ export const getAllOrders = asyncErrorHandler(async (req, res, next) => {
     }
   });
 
+  const totalPages =
+    isPaginationRequested && limitNum > 0 ? Math.ceil(totalItems / limitNum) : 1;
+
   res.status(200).json({
     success: true,
     message: "Orders fetched successfully",
     data: orders,
+    pagination: {
+      currentPage: pageNum,
+      totalPages: Math.max(1, totalPages),
+      totalItems,
+      itemsPerPage: isPaginationRequested && limitNum > 0 ? limitNum : totalItems,
+    },
   });
 });
 
@@ -1633,39 +1686,51 @@ export const overwriteOrder = asyncErrorHandler(async (req, res, next) => {
         }
       }
 
-      // 4. Validate and Deduct New Stock (Using batch logic)
-      for (const [inventoryIdStr, totalBaseQty] of aggregatedQuantities.entries()) {
-        const stockAgg = await StorefrontInventory.aggregate([
-          { $match: { inventoryId: new mongoose.Types.ObjectId(inventoryIdStr), storefrontId } },
-          { $group: { _id: null, totalQty: { $sum: "$quantity" } } }
-        ]).session(session);
+      // 4. Validate and Deduct New Stock (Using batch logic with bulkWrite)
+      const bulkOverwriteOps = [];
 
-        const totalAvailable = stockAgg.length > 0 ? (stockAgg[0].totalQty || 0) : 0;
+      for (const [inventoryIdStr, totalBaseQty] of aggregatedQuantities.entries()) {
+        const productObjId = new mongoose.Types.ObjectId(inventoryIdStr);
+
+        const batchRecords = await StorefrontInventory.find(
+          { inventoryId: productObjId, storefrontId, quantity: { $gt: 0 } },
+          null,
+          { session, sort: { createdAt: 1 } }
+        );
+
+        const totalAvailable = batchRecords.reduce((sum, b) => sum + b.quantity, 0);
 
         if (totalAvailable < totalBaseQty) {
           const inventoryItem = inventoryMap.get(inventoryIdStr);
           throw new CustomError(400, `Insufficient stock for product. Available: ${totalAvailable}, Requested: ${totalBaseQty}`);
         }
 
-        const batchRecords = await StorefrontInventory.find(
-          { inventoryId: new mongoose.Types.ObjectId(inventoryIdStr), storefrontId, quantity: { $gt: 0 } },
-          null,
-          { session, sort: { createdAt: 1 } }
-        );
-
         let remaining = totalBaseQty;
+        const now = new Date();
         for (const batch of batchRecords) {
           if (remaining <= 0) break;
           const deduct = Math.min(batch.quantity, remaining);
-          batch.quantity -= deduct;
-          batch.lastUpdated = new Date();
-          await batch.save({ session });
+          
+          bulkOverwriteOps.push({
+            updateOne: {
+              filter: { _id: batch._id },
+              update: {
+                $inc: { quantity: -deduct },
+                $set: { lastUpdated: now },
+              },
+            },
+          });
+
           remaining -= deduct;
         }
 
         if (remaining > 0) {
           throw new CustomError(400, `Failed to deduct full stock. Shortage: ${remaining}`);
         }
+      }
+
+      if (bulkOverwriteOps.length > 0) {
+        await StorefrontInventory.bulkWrite(bulkOverwriteOps, { session });
       }
 
       // 5. Overwrite items

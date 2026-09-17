@@ -231,6 +231,9 @@ orderSchema.index({ isDeleted: 1 });
 orderSchema.index({ createdAt: -1 }); // For recent orders
 // Note: orderNumber index is automatically created by unique: true in schema
 orderSchema.index({ storefrontId: 1, isDeleted: 1 }); // Compound index for common queries
+orderSchema.index({ storefrontId: 1, isDeleted: 1, createdAt: -1 }); // Fast storefront date sorting
+orderSchema.index({ paymentType: 1, isDeleted: 1, createdAt: -1 }); // Fast payment type sorting
+orderSchema.index({ creditPersonId: 1, isDeleted: 1, createdAt: -1 }); // Fast credit person order sorting
 orderSchema.index({ orderStatus: 1 }); // For status filtering
 orderSchema.index({ creditPersonId: 1 }); // For credit person queries
 orderSchema.index({ paymentType: 1 }); // For filtering by payment type
